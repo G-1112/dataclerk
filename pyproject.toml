@@ -1,0 +1,39 @@
+[project]
+name = "dataclerk"
+version = "0.1.0"
+description = "问数官 — 双通道校园智能助手（Text-to-SQL + 政策 RAG）+ 体系化测试"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.9",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+# 可选：sqlglot 用于权限层 SQL 解析（未安装则回退为正则白名单解析）
+sqlparse = ["sqlglot>=25.0"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["agent", "testsuite"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = ["E501"]
