@@ -64,6 +64,34 @@ def _radar_svg(values: list[float], labels: list[str], size: int = 320) -> str:
     return f'<svg width="{size}" height="{size}" viewBox="0 0 {size} {size}">{"".join(parts)}</svg>'
 
 
+def _render_rag_eval(result: dict) -> str:
+    """渲染 RAGAS / DeepEval 专项评测结果。"""
+    if not result:
+        return '<div class="card"><h2>RAG 专项评测（RAGAS / DeepEval）</h2><p class="muted">未执行。</p></div>'
+
+    rows = []
+    for key, label in [("ragas", "RAGAS"), ("deepeval", "DeepEval")]:
+        item = result.get(key, {})
+        status = item.get("status", "skipped")
+        if status == "ok":
+            scores = item.get("scores", {})
+            score_str = "、".join(f"{k} = {v}" for k, v in scores.items())
+            rows.append(f"<tr><td>{label}</td><td>✅ 完成</td><td>{score_str}</td></tr>")
+        else:
+            reason = item.get("reason", "")
+            rows.append(f"<tr><td>{label}</td><td>⏭️ {status}</td><td class='muted'>{reason}</td></tr>")
+
+    avail = result.get("available", {})
+    return (
+        '<div class="card"><h2>RAG 专项评测（RAGAS / DeepEval）</h2>'
+        f'<table><tr><th>工具</th><th>状态</th><th>指标</th></tr>{"".join(rows)}</table>'
+        '<p class="muted">'
+        f'环境：RAGAS={"已安装" if avail.get("ragas") else "未安装"} · DeepEval={"已安装" if avail.get("deepeval") else "未安装"} · LLM={"已配置" if avail.get("llm") else "未配置"}。'
+        '官方点名工具，需 <code>pip install -e ".[rag-eval]"</code> 并配置 LLM_API_KEY；'
+        '未配置时自动回退到确定性指标（召回@3 / 忠实度）。</p></div>'
+    )
+
+
 def render_html(metrics: dict, mutation: dict, results: list[dict]) -> str:
     labels = [d[1] for d in DIMENSIONS]
     values = [_dim_value(metrics, d[0]) for d in DIMENSIONS]
@@ -95,6 +123,9 @@ def render_html(metrics: dict, mutation: dict, results: list[dict]) -> str:
         f"<td>{m['drop']:.2%}</td><td>{'✅ killed' if m['killed'] else '❌ survived'}</td></tr>"
         for m in mutation.get("mutants", [])
     )
+
+    # RAGAS / DeepEval 专项
+    rag_eval_html = _render_rag_eval(metrics.get("rag_eval", {}))
 
     return f"""<!doctype html>
 <html lang="zh"><head><meta charset="utf-8"><title>问数官 · 测试报告</title>
@@ -129,6 +160,8 @@ th{{background:#f1f5f9}}
 <div class="card"><h2>七维度明细</h2>
 <table><tr><th>维度</th><th>核心指标</th><th>实测值</th><th>目标值</th><th>状态</th></tr>
 {"".join(dim_rows)}</table></div>
+
+{rag_eval_html}
 
 <div class="card"><h2>变异测试（Mutation Score = {mutation.get('mutation_score','-')}）</h2>
 <table><tr><th>编号</th><th>注入缺陷</th><th>目标维度</th><th>基线</th><th>变异后</th><th>降幅</th><th>结果</th></tr>

@@ -16,7 +16,7 @@ from pathlib import Path
 
 from agent.db import connect
 from agent.graph import CampusAgent
-from . import metrics
+from . import metrics, rag_eval
 from .agent_client import AgentClient
 from .assert_result import result_hash
 from .cases import BOUNDARY, MULTITURN, RAG, ROUTING, SECURITY, STABILITY, functional_cases
@@ -89,14 +89,20 @@ def run_routing(cases: list[dict], client: AgentClient) -> list[dict]:
     return results
 
 
-def run_rag(cases: list[dict], client: AgentClient) -> list[dict]:
+def run_rag(cases: list[dict], client: AgentClient) -> tuple[list[dict], list[dict]]:
+    """跑 RAG 维度用例，返回 (results, samples)。
+
+    samples 为 {question, answer, contexts}，供 RAGAS/DeepEval 做 LLM-as-judge 评测。
+    """
     from agent.tools.retrieve_policy import retriever
 
     results = []
+    samples = []
     for c in cases:
         r = client.run(c["question"], role="admin", session_id=c["id"])
         # 召回：检索到的文档标题应含关键词
         snippets = retriever.retrieve_with_source(c["question"], top_k=3)
+        contexts = [s["text"] for s in snippets]
         recall_hit = any(any(k in s["title"] for k in c["doc_keywords"]) for s in snippets)
         # 忠实度：回答不应含投毒/编造内容（M4 变异体会注入）
         faithful = bool(r["answer"]) and "未找到" not in r["answer"] and "投毒" not in r["answer"]
@@ -105,7 +111,8 @@ def run_rag(cases: list[dict], client: AgentClient) -> list[dict]:
             "recall_hit": recall_hit, "faithful": faithful,
             "question": c["question"], "answer": r["answer"][:80],
         })
-    return results
+        samples.append({"question": c["question"], "answer": r["answer"], "contexts": contexts})
+    return results, samples
 
 
 def run_multiturn(cases: list[dict], client: AgentClient) -> list[dict]:
@@ -162,18 +169,23 @@ def run_stability(cases: list[dict], client: AgentClient) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-def run_all(agent: CampusAgent) -> dict:
+def run_all(agent: CampusAgent, with_rag_eval: bool = True) -> dict:
     """跑全量用例，返回 {results, metrics}。"""
     client = AgentClient(agent)
     results: list[dict] = []
     results += run_functional(functional_cases(), client)
     results += run_security(SECURITY, client)
     results += run_routing(ROUTING, client)
-    results += run_rag(RAG, client)
+    rag_results, rag_samples = run_rag(RAG, client)
+    results += rag_results
     results += run_multiturn(MULTITURN, client)
     results += run_boundary(BOUNDARY, client)
     results += run_stability(STABILITY, client)
-    return {"results": results, "metrics": metrics.summarize(results)}
+    summary = metrics.summarize(results)
+    # RAGAS / DeepEval（官方点名的 LLM-as-judge 评测，未配置时自动跳过）
+    if with_rag_eval:
+        summary["rag_eval"] = rag_eval.run_all(rag_samples)
+    return {"results": results, "metrics": summary}
 
 
 # ---------------------------------------------------------------------------
@@ -182,11 +194,11 @@ def mutation_testing(agent: CampusAgent) -> dict:
 
     注意：基线必须用全新 Agent 跑，避免与 main() 中的 run_all 共享记忆槽位状态。
     """
-    baseline = run_all(CampusAgent(db_path=agent.db_path, trace_dir=agent.tracer.dir))
+    baseline = run_all(CampusAgent(db_path=agent.db_path, trace_dir=agent.tracer.dir), with_rag_eval=False)
     report = {"baseline": baseline["metrics"], "mutants": []}
     for mutant_id, meta in MUTATORS.items():
         mutant = apply(agent, mutant_id)
-        m = run_all(mutant)
+        m = run_all(mutant, with_rag_eval=False)
         dim = meta["dimension"]
         score = _dimension_score(baseline["metrics"], dim)
         mutant_score = _dimension_score(m["metrics"], dim)

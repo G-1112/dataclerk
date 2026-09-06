@@ -52,6 +52,8 @@ cd dataclerk
 pip install -e ".[dev]"      # 或 uv pip install -e ".[dev]"
 # 可选：sqlglot 用于权限层 SQL 解析（未装则回退正则解析）
 pip install -e ".[sqlparse]"
+# 可选：RAGAS / DeepEval（官方点名的 RAG 评测工具，LLM-as-judge）
+pip install -e ".[rag-eval]"
 ```
 
 > **0 Key 即可跑通**：不配置 LLM，智能体用确定性 mock SQL 生成器 + 关键词路由，
@@ -93,6 +95,7 @@ uvicorn agent.serve:app --reload --port 8000
 |---|---|---|
 | 大模型（DeepSeek/千问/GLM） | 可选 | 不填则用确定性 mock 生成 SQL + 关键词路由 |
 | 向量库（ChromaDB） | 可选 | 默认纯 Python TF-IDF 检索器，零依赖 |
+| RAGAS / DeepEval | 可选 | 官方点名的 RAG 评测工具，需 `.[rag-eval]` + LLM Key；未配置自动跳过 |
 
 配置 `.env`（复制 `.env.example`）后，智能体的 Text-to-SQL 与回答合成会走真实 LLM。
 

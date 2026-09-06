@@ -14,6 +14,12 @@ dependencies = [
 [project.optional-dependencies]
 # 可选：sqlglot 用于权限层 SQL 解析（未安装则回退为正则白名单解析）
 sqlparse = ["sqlglot>=25.0"]
+# 可选：RAGAS / DeepEval（官方点名的 RAG 评测工具，LLM-as-judge）
+rag-eval = [
+    "ragas>=0.2.0",
+    "deepeval>=1.0.0",
+    "datasets>=2.20.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
