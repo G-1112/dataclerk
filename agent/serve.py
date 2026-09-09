@@ -44,7 +44,8 @@ def _resolve_role(requested: str) -> str:
 @app.post("/chat")
 async def chat(req: ChatRequest) -> dict:
     role = _resolve_role(req.role)
-    return agent.chat(req.question, role=role, session_id=req.session_id, user_id=req.user_id)
+    # 异步执行，避免同步 LLM/DB 阻塞事件循环，支撑并发负载（性能维度）
+    return await agent.achat(req.question, role=role, session_id=req.session_id, user_id=req.user_id)
 
 
 @app.get("/trace/{trace_id}")

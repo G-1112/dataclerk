@@ -53,6 +53,14 @@ class CampusAgent:
     def reset(self, session_id: str) -> None:
         self._slots.pop(session_id, None)
 
+    async def achat(self, question: str, role: str = "student", session_id: str = "default", user_id: str = "") -> dict:
+        """异步入口：把同步 chat 放到线程池执行，避免阻塞事件循环（性能维度）。"""
+        import asyncio
+
+        return await asyncio.to_thread(
+            self.chat, question, role=role, session_id=session_id, user_id=user_id
+        )
+
     # ------------------------------------------------------------------
     def chat(self, question: str, role: str = "admin", session_id: str = "default", user_id: str = "") -> dict:
         slots = self._slots_for(session_id)

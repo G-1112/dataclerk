@@ -90,6 +90,22 @@ def stability(results: list[dict]) -> dict:
     return {"结果一致率": _rate(total, consistent), "题目数": total}
 
 
+def performance(results: list[dict]) -> dict:
+    """性能维度：端到端时延（平均 / P95 / 3 秒内完成率）。"""
+    if not results:
+        return {"平均时延ms": 0, "P95时延ms": 0, "3秒内完成率": 0.0, "用例数": 0}
+    lats = sorted(r.get("latency_ms", 0) for r in results)
+    avg = sum(lats) / len(lats)
+    p95 = lats[min(len(lats) - 1, int(len(lats) * 0.95))]
+    within = sum(1 for r in results if r.get("passed"))
+    return {
+        "平均时延ms": round(avg, 1),
+        "P95时延ms": round(p95, 1),
+        "3秒内完成率": _rate(len(results), within),
+        "用例数": len(results),
+    }
+
+
 def summarize(all_results: list[dict]) -> dict:
     """按维度聚合全部结果。all_results 每项含 dimension 字段。"""
     grouped = defaultdict(list)
@@ -105,4 +121,5 @@ def summarize(all_results: list[dict]) -> dict:
         "boundary": boundary(grouped.get("boundary", [])),
         "routing": routing(grouped.get("routing", [])),
         "stability": stability(grouped.get("stability", [])),
+        "performance": performance(grouped.get("performance", [])),
     }
