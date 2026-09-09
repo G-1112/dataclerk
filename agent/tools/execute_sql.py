@@ -9,9 +9,23 @@ from ..db import connect
 from ..guard.permission import PermissionGuard
 
 
+def _resolve_teacher_college(current_user: str) -> str | None:
+    """服务端解析教师所属院系（绝不来自客户端 SQL）。无 DB 时返回 None。"""
+    try:
+        conn = connect()
+        row = conn.execute(
+            "SELECT college FROM teachers WHERE teacher_id = ?", (current_user,)
+        ).fetchone()
+        conn.close()
+        return row[0] if row else None
+    except Exception:
+        return None
+
+
 def execute_sql(sql: str, role: str = "admin", current_user: str = "") -> dict:
     """执行只读 SQL，返回 {ok, columns, rows, error, rewritten}。"""
-    guard = PermissionGuard(role=role, current_user=current_user)
+    teacher_college = _resolve_teacher_college(current_user) if role == "teacher" else None
+    guard = PermissionGuard(role=role, current_user=current_user, teacher_college=teacher_college)
     result = guard.check(sql)
     if not result.allowed:
         return {"ok": False, "error": result.reason, "columns": [], "rows": []}
