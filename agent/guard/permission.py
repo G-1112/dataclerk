@@ -204,8 +204,12 @@ class PermissionGuard:
         if where is None:
             parsed.set("where", exp.Where(this=cond))
         else:
-            # 顶层 AND 强制过滤：即便原条件含 OR，分支也被约束为仅当前用户
-            where.set("this", exp.And(this=where.this, expression=cond))
+            # 顶层 AND 强制过滤：原条件必须用括号包裹！
+            # 否则 `WHERE 1=1 OR student_id='我'` 会被拼成
+            # `WHERE 1=1 OR student_id='我' AND student_id='我'`，
+            # 因 AND 优先级高于 OR 而等价于 `TRUE OR (...)` → 恒真 → 越权返回全表。
+            # （审计实测：`1=1 OR student_id='S00001'` 曾泄露全部学生行）
+            where.set("this", exp.And(this=exp.Paren(this=where.this), expression=cond))
         return parsed.sql(dialect="sqlite")
 
     def _inject_college(self, sql: str, college: str) -> str | None:
@@ -222,7 +226,8 @@ class PermissionGuard:
             if where is None:
                 parsed.set("where", exp.Where(this=cond))
             else:
-                where.set("this", exp.And(this=where.this, expression=cond))
+                # 同 _force_student_filter：原条件必须加括号，避免 OR 优先级导致过滤失效
+                where.set("this", exp.And(this=exp.Paren(this=where.this), expression=cond))
             return parsed.sql(dialect="sqlite")
         except Exception:
             return None

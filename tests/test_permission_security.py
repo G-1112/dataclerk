@@ -114,5 +114,41 @@ def test_teacher_single_student_detail_rejected():
     assert "单个学生" in r.reason
 
 
+def test_or_tautology_on_left_is_parenthesized():
+    """审计新发现（P0）：恒真分支位于 OR 左侧时，原条件必须被括号包裹。
+
+    `1=1 OR student_id='S001'` 若不加括号会拼成 `1=1 OR (... AND student_id='S001')`，
+    因 AND 优先级高于 OR 而整体恒真 → 越权返回全表（实测曾泄露全部学生行）。
+    """
+    conn = _in_memory_enrollments()
+    guard = PermissionGuard(role="student", current_user="S001")
+    for sql in (
+        "SELECT * FROM enrollments WHERE 1=1 OR student_id='S001'",
+        "SELECT * FROM enrollments WHERE 'a'='a' OR student_id='S001'",
+        "SELECT * FROM enrollments WHERE 2>1 OR student_id='S001'",
+    ):
+        r = guard.check(sql)
+        assert r.allowed, f"{sql} 应放行（走行级过滤），实际拒绝：{r.reason}"
+        rw = r.rewritten_sql
+        # 原条件整体必须被括号包裹，再 AND 上本人约束
+        assert "(" in rw, f"原条件未被括号包裹，存在优先级绕过风险：{rw}"
+        assert "AND student_id = 'S001'" in rw, rw
+        assert rw.index("(") < rw.index("AND student_id = 'S001'"), rw
+        rows = conn.execute(rw).fetchall()
+        ids = {row[0] for row in rows}
+        assert ids == {"S001"}, f"OR 恒真绕过导致越权泄露 {ids}（SQL: {sql}）"
+    conn.close()
+
+
+def test_teacher_college_filter_is_parenthesized():
+    """teacher 院系过滤注入同样需要括号，避免 OR 优先级逃逸。"""
+    guard = PermissionGuard(role="teacher", teacher_college="计算机学院")
+    r = guard.check("SELECT * FROM courses WHERE credit=3 OR credit=4")
+    assert r.allowed, r.reason
+    rw = r.rewritten_sql
+    assert "(" in rw and "AND college = '计算机学院'" in rw, rw
+    assert rw.index("(") < rw.index("AND college = '计算机学院'"), rw
+
+
 if __name__ == "__main__":
     raise SystemExit(__import__("pytest").main([__file__, "-q"]))
