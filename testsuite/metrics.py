@@ -123,3 +123,92 @@ def summarize(all_results: list[dict]) -> dict:
         "stability": stability(grouped.get("stability", [])),
         "performance": performance(grouped.get("performance", [])),
     }
+
+
+# ---------------------------------------------------------------------------
+# 与上一次跑批对比（第四轮交互增强）
+#
+# 测试套件的价值不止于「这次多少分」，更在于「比上次退步了吗」。
+# 这里把两次 metrics 逐指标比对，标出提升/回归/持平，
+# 让评审与开发一眼看到改动带来的影响。
+# ---------------------------------------------------------------------------
+# 越小越好的指标（时延类）。其余指标默认越大越好。
+# 第四轮实测发现的语义 bug：首次实现把所有指标的「数值下降」都判为回归，
+# 于是把「P95 时延 95.8ms → 5.5ms」这种明显优化报成了回归。
+_LOWER_IS_BETTER_HINTS = ("时延", "latency", "耗时", "延迟")
+
+
+def _lower_is_better(metric: str) -> bool:
+    name = (metric or "").lower()
+    return any(h in name for h in _LOWER_IS_BETTER_HINTS)
+
+
+def compare_runs(prev: dict, cur: dict) -> list[dict]:
+    """逐 (维度, 指标) 比较两次跑批。
+
+    返回 [{dimension, metric, prev, cur, delta, direction}]。
+    direction ∈ {up, down, same}，语义统一为**好坏方向**而非数值方向：
+      - 越大越好的指标（准确率等）：数值上升 = up（提升）
+      - 越小越好的指标（时延等）  ：数值下降 = up（提升）
+    「用例数」「平均步数」属规模/行为指标，仍会列出但不计入回归判定。
+    """
+    rows: list[dict] = []
+    if not isinstance(prev, dict) or not isinstance(cur, dict):
+        return rows
+
+    for dim in sorted(set(prev) | set(cur)):
+        p_dim = prev.get(dim) or {}
+        c_dim = cur.get(dim) or {}
+        if not isinstance(p_dim, dict) or not isinstance(c_dim, dict):
+            continue
+        for metric in sorted(set(p_dim) | set(c_dim)):
+            pv = p_dim.get(metric)
+            cv = c_dim.get(metric)
+            if not isinstance(pv, (int, float)) or not isinstance(cv, (int, float)):
+                continue
+            diff = round(cv - pv, 4)
+            # 数值变化方向
+            numeric = "same"
+            if diff > 1e-9:
+                numeric = "up_num"
+            elif diff < -1e-9:
+                numeric = "down_num"
+
+            # 转换为好坏方向
+            if numeric == "same":
+                direction = "same"
+            elif _lower_is_better(metric):
+                direction = "up" if numeric == "down_num" else "down"
+            else:
+                direction = "up" if numeric == "up_num" else "down"
+
+            rows.append(
+                {
+                    "dimension": dim,
+                    "metric": metric,
+                    "prev": pv,
+                    "cur": cv,
+                    "delta": diff,
+                    "direction": direction,
+                    "lower_is_better": _lower_is_better(metric),
+                }
+            )
+    return rows
+
+
+def regression_summary(deltas: list[dict]) -> dict:
+    """汇总回归情况；用例数变化不计为回归。"""
+    ignored = {"用例数", "平均步数"}
+    regressions = [
+        d for d in deltas if d["direction"] == "down" and d["metric"] not in ignored
+    ]
+    improvements = [
+        d for d in deltas if d["direction"] == "up" and d["metric"] not in ignored
+    ]
+    return {
+        "regressions": regressions,
+        "improvements": improvements,
+        "regression_count": len(regressions),
+        "improvement_count": len(improvements),
+        "has_regression": bool(regressions),
+    }

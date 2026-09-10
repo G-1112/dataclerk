@@ -261,6 +261,18 @@ def repro_command(case_id: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+def _load_prev_metrics(out_dir: Path) -> dict | None:
+    """读取上次跑批的 metrics.json（不存在则返回 None）。"""
+    path = out_dir / "metrics.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+    return data.get("metrics") if isinstance(data, dict) else None
+
+
 def run_all(agent: CampusAgent, with_rag_eval: bool = True) -> dict:
     """跑全量用例，返回 {results, metrics}。"""
     client = AgentClient(agent)
@@ -378,11 +390,14 @@ def main() -> int:
 
     t0 = time.time()
     agent = CampusAgent(db_path=args.db) if args.db else CampusAgent()
-    suite = run_all(agent)
-    mutation = mutation_testing(agent)
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # 与上一次跑批对比（第四轮）：在覆盖 metrics.json 之前先读取旧结果
+    prev_metrics = _load_prev_metrics(out_dir)
+
+    suite = run_all(agent)
+    mutation = mutation_testing(agent)
 
     # metrics.json
     (out_dir / "metrics.json").write_text(
@@ -393,7 +408,7 @@ def main() -> int:
     # HTML 报告
     from .report.generate_report import render_html
 
-    html = render_html(suite["metrics"], mutation, suite["results"])
+    html = render_html(suite["metrics"], mutation, suite["results"], prev_metrics)
     (out_dir / "report.html").write_text(html, encoding="utf-8")
 
     elapsed = int(time.time() - t0)
@@ -403,8 +418,23 @@ def main() -> int:
     for m in mutation["mutants"]:
         status = "killed ✓" if m["killed"] else "survived ✗"
         print(f"  {m['id']} {m['name']}: {status} (降幅 {m['drop']:.2f})")
+
+    # 与上次对比
+    if prev_metrics:
+        deltas = metrics.compare_runs(prev_metrics, suite["metrics"])
+        summary = metrics.regression_summary(deltas)
+        print(f"与上次对比：提升 {summary['improvement_count']} 项，回归 {summary['regression_count']} 项")
+        for d in summary["regressions"]:
+            print(f"  ↓ 回归 {d['dimension']}.{d['metric']}: {d['prev']} → {d['cur']}")
+        for d in summary["improvements"]:
+            print(f"  ↑ 提升 {d['dimension']}.{d['metric']}: {d['prev']} → {d['cur']}")
+    else:
+        print("（首次跑批，无历史指标可对比）")
+
     print(f"报告 → {out_dir}/report.html")
-    return 0
+    return 1 if prev_metrics and metrics.regression_summary(
+        metrics.compare_runs(prev_metrics, suite["metrics"])
+    )["has_regression"] else 0
 
 
 if __name__ == "__main__":

@@ -186,7 +186,68 @@ def _render_rag_eval(result: dict) -> str:
     )
 
 
-def render_html(metrics: dict, mutation: dict, results: list[dict]) -> str:
+def _comparison_section(prev_metrics: dict | None, metrics: dict) -> str:
+    """与上一次跑批对比（第四轮）：标出回归与提升。
+
+    测试套件的价值不止于「这次多少分」，更在于「比上次退步了吗」。
+    """
+    if not prev_metrics:
+        return (
+            '<div class="card"><h2>与上次对比</h2>'
+            '<p class="muted">首次跑批，暂无可对比的历史指标。'
+            '再次运行 <code>python -m testsuite.run_suite</code> 即会自动与本次结果对比。</p></div>'
+        )
+
+    from .. import metrics as metrics_mod
+
+    deltas = metrics_mod.compare_runs(prev_metrics, metrics)
+    summary = metrics_mod.regression_summary(deltas)
+    changed = [d for d in deltas if d["direction"] != "same"]
+
+    if not changed:
+        body = '<p class="muted">各项指标与上次完全一致，无回归也无提升。</p>'
+    else:
+        rows = []
+        # 回归优先展示
+        ordered = sorted(changed, key=lambda d: 0 if d["direction"] == "down" else 1)
+        for d in ordered:
+            if d["direction"] == "down":
+                mark, cls = "↓ 回归", "sev-p0"
+            else:
+                mark, cls = "↑ 提升", "sev-p2"
+            metric_name = d["metric"]
+            if d.get("lower_is_better"):
+                metric_name += "（越小越好）"
+            rows.append(
+                f"<tr><td>{d['dimension']}</td><td>{metric_name}</td>"
+                f"<td>{d['prev']}</td><td>{d['cur']}</td>"
+                f"<td>{d['delta']:+.4f}</td>"
+                f'<td><span class="sev {cls}">{mark}</span></td></tr>'
+            )
+        body = (
+            '<table><tr><th>维度</th><th>指标</th><th>上次</th><th>本次</th><th>变化</th><th>判定</th></tr>'
+            + "".join(rows)
+            + "</table>"
+        )
+
+    verdict = (
+        f'<p class="muted">提升 {summary["improvement_count"]} 项，'
+        f'回归 {summary["regression_count"]} 项。'
+        + (
+            "<b style='color:#dc2626'>检测到回归，建议排查后再提交。</b>"
+            if summary["has_regression"]
+            else "未检测到回归。"
+        )
+        + "</p>"
+        + '<p class="muted">注：判定按「好坏方向」而非数值方向 —— 时延类指标（越小越好）'
+        '数值下降记为提升；「用例数」「平均步数」属规模/行为指标，不计入回归判定。</p>'
+    )
+    return f'<div class="card"><h2>与上次对比</h2>{body}{verdict}</div>'
+
+
+def render_html(
+    metrics: dict, mutation: dict, results: list[dict], prev_metrics: dict | None = None
+) -> str:
     labels = [d[1] for d in DIMENSIONS]
     values = [_dim_value(metrics, d[0]) for d in DIMENSIONS]
     total = sum(values) / len(values)
@@ -284,6 +345,8 @@ code.cmd.copied::after{{content:" ✓ 已复制";color:#16a34a;font-weight:700}}
 <table><tr><th>维度</th><th>通过/总数</th><th>通过率</th><th>分布</th></tr>
 {dim_pass_rows}</table>
 <p class="muted">按通过率升序排列，最上面的即当前最弱维度。</p></div>
+
+{_comparison_section(prev_metrics, metrics)}
 
 <div class="card"><h2>缺陷分类与定位</h2>
 {sev_summary}
