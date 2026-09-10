@@ -39,6 +39,66 @@ def _grade(score: float) -> str:
     return "D"
 
 
+# 缺陷分类规则：维度 → (类别, 严重度, 修复建议)
+# 严重度定义：P0 = 安全越权/数据泄露；P1 = 功能错误/路由误判；P2 = 体验/一致性
+_DEFECT_RULES = {
+    "security": ("安全越权", "P0", "检查权限过滤层（guard/permission.py）是否覆盖该谓词形态，补对抗用例回归"),
+    "functional": ("功能准确性", "P1", "核对 SQL 生成与标准答案的语义差异，必要时补充 few-shot 示例"),
+    "routing": ("路由误判", "P1", "检查 router.py 关键词表与强数据意图判定，补路由用例"),
+    "rag": ("RAG 检索质量", "P1", "检查政策库切片粒度与 bigram 召回阈值（当前 0.02）"),
+    "multiturn": ("多轮指代", "P2", "检查 memory/slots.py 的槽位继承与历史窗口"),
+    "boundary": ("边界降级", "P2", "应优雅返回错误提示而非崩溃/空响应"),
+    "stability": ("结果一致性", "P2", "检查是否存在非确定性来源（温度/随机/并发顺序）"),
+    "performance": ("性能超时", "P2", "优化 SQL 或加缓存/上限，定位慢查询"),
+}
+
+
+def classify_defect(result: dict) -> dict:
+    """把一条失败用例归类为 (类别, 严重度, 建议)。"""
+    dim = result.get("dimension", "unknown")
+    cat, sev, advice = _DEFECT_RULES.get(dim, ("其他", "P2", "人工复核"))
+    # 安全维度若带 category（注入/绕过/破坏性），细分显示
+    sub = result.get("category")
+    label = f"{cat}·{sub}" if sub else cat
+    return {"label": label, "severity": sev, "advice": advice, "dimension": dim}
+
+
+def _defect_rows(failed: list[dict]) -> str:
+    """生成带 data-* 属性的可筛选缺陷行。"""
+    rows = []
+    for r in failed:
+        d = classify_defect(r)
+        sev_cls = {"P0": "sev-p0", "P1": "sev-p1", "P2": "sev-p2"}.get(d["severity"], "")
+        rows.append(
+            f'<tr class="defect-row" data-sev="{d["severity"]}" data-dim="{d["dimension"]}">'
+            f'<td><span class="sev {sev_cls}">{d["severity"]}</span></td>'
+            f'<td>{r.get("id","")}</td>'
+            f'<td>{d["label"]}</td>'
+            f'<td>{str(r.get("question",""))[:50]}</td>'
+            f'<td>{str(r.get("answer",""))[:70]}</td>'
+            f'<td class="muted">{d["advice"]}</td>'
+            f"</tr>"
+        )
+    return "".join(rows) or '<tr><td colspan="6">无失败用例</td></tr>'
+
+
+def _severity_summary(failed: list[dict]) -> str:
+    """按严重度聚合的小卡片。"""
+    counts = {"P0": 0, "P1": 0, "P2": 0}
+    for r in failed:
+        counts[classify_defect(r)["severity"]] += 1
+    cards = []
+    for sev, color in [("P0", "#dc2626"), ("P1", "#d97706"), ("P2", "#64748b")]:
+        cards.append(
+            f'<div class="sev-card" style="border-left:4px solid {color}">'
+            f'<div class="sev-num" style="color:{color}">{counts[sev]}</div>'
+            f'<div class="muted">{sev} {"（安全/越权）" if sev=="P0" else "（功能/路由）" if sev=="P1" else "（体验/一致性）"}</div>'
+            f"</div>"
+        )
+    return f'<div class="flex">{"".join(cards)}</div>'
+
+
+
 def _radar_svg(values: list[float], labels: list[str], size: int = 320) -> str:
     """内联 SVG 雷达图（7 维），离线可用。"""
     n = len(values)
@@ -111,10 +171,11 @@ def render_html(metrics: dict, mutation: dict, results: list[dict]) -> str:
 
     # 失败案例
     failed = [r for r in results if not r.get("passed")]
-    failed_rows = "".join(
-        f"<tr><td>{r.get('id','')}</td><td>{r.get('dimension','')}</td><td>{r.get('question','')[:40]}</td><td>{str(r.get('answer',''))[:60]}</td></tr>"
-        for r in failed[:20]
-    ) or "<tr><td colspan='4'>无失败用例</td></tr>"
+    failed_rows = _defect_rows(failed)
+    sev_summary = _severity_summary(failed)
+    dim_options = "".join(
+        f'<option value="{d[0]}">{d[1]}</option>' for d in DIMENSIONS
+    )
 
     # 变异测试
     mut_rows = "".join(
@@ -140,6 +201,16 @@ th{{background:#f1f5f9}}
 .grade{{font-size:20px;font-weight:700;padding:2px 12px;border-radius:8px;background:#dbeafe;color:#1d4ed8}}
 .flex{{display:flex;gap:24px;align-items:center;flex-wrap:wrap}}
 .muted{{color:#6b7280;font-size:13px}}
+.sev-card{{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:12px 20px;min-width:120px}}
+.sev-num{{font-size:28px;font-weight:700;line-height:1.1}}
+.sev{{display:inline-block;padding:1px 8px;border-radius:6px;font-size:12px;font-weight:700;color:#fff}}
+.sev-p0{{background:#dc2626}}
+.sev-p1{{background:#d97706}}
+.sev-p2{{background:#64748b}}
+.filters{{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin:14px 0}}
+.filters label{{font-size:13px;color:#475569;display:flex;flex-direction:column;gap:4px}}
+.filters select,.filters input{{padding:5px 8px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;min-width:130px}}
+.filters input{{min-width:200px}}
 </style></head><body>
 <h1>问数官 · 智能体可靠性测试报告</h1>
 
@@ -168,8 +239,30 @@ th{{background:#f1f5f9}}
 {mut_rows}</table>
 <p class="muted">判据：目标维度指标降幅 > 20% 判为 killed（测试集能抓到该缺陷）；否则 survived（存在盲区）。</p></div>
 
-<div class="card"><h2>失败用例 Top 20</h2>
-<table><tr><th>用例</th><th>维度</th><th>问题</th><th>回答/错误</th></tr>
+<div class="card"><h2>缺陷分类与定位</h2>
+{sev_summary}
+<div class="filters">
+  <label>严重度
+    <select id="f-sev">
+      <option value="">全部</option>
+      <option value="P0">P0 安全/越权</option>
+      <option value="P1">P1 功能/路由</option>
+      <option value="P2">P2 体验/一致性</option>
+    </select>
+  </label>
+  <label>维度
+    <select id="f-dim">
+      <option value="">全部</option>
+      {dim_options}
+    </select>
+  </label>
+  <label>搜索
+    <input id="f-kw" type="text" placeholder="用例编号 / 问题关键词" />
+  </label>
+  <span class="muted" id="f-count"></span>
+</div>
+<table id="defect-table">
+<tr><th>严重度</th><th>用例</th><th>类别</th><th>问题</th><th>回答/错误</th><th>修复建议</th></tr>
 {failed_rows}</table></div>
 
 <div class="card"><h2>质量-成本</h2>
@@ -179,4 +272,35 @@ th{{background:#f1f5f9}}
 <div class="card"><h2>改进闭环</h2>
 <p class="muted">首轮跑批暴露的问题（如越权拦截、路由误判）已通过权限层 + 确定性路由修复，
 复测对比见 docs/缺陷分析报告.md。</p></div>
+
+<script>
+(function () {{
+  var sev = document.getElementById("f-sev");
+  var dim = document.getElementById("f-dim");
+  var kw = document.getElementById("f-kw");
+  var rows = Array.prototype.slice.call(document.querySelectorAll("#defect-table .defect-row"));
+  var counter = document.getElementById("f-count");
+
+  function apply() {{
+    var s = sev.value, d = dim.value, k = kw.value.trim().toLowerCase();
+    var shown = 0;
+    rows.forEach(function (r) {{
+      var okSev = !s || r.dataset.sev === s;
+      var okDim = !d || r.dataset.dim === d;
+      var text = r.textContent.toLowerCase();
+      var okKw = !k || text.indexOf(k) >= 0;
+      var show = okSev && okDim && okKw;
+      r.style.display = show ? "" : "none";
+      if (show) shown++;
+    }});
+    counter.textContent = "显示 " + shown + " / " + rows.length + " 条";
+  }}
+
+  [sev, dim, kw].forEach(function (el) {{
+    el.addEventListener("input", apply);
+    el.addEventListener("change", apply);
+  }});
+  apply();
+}})();
+</script>
 </body></html>"""
