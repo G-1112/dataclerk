@@ -150,5 +150,105 @@ def test_teacher_college_filter_is_parenthesized():
     assert rw.index("(") < rw.index("AND college = '计算机学院'"), rw
 
 
+# ---------------------------------------------------------------------------
+# 第三轮修复：学生主表聚合导致的信息泄露（R-PERM-01/02）
+#
+# 原实现只要 SQL 里出现 COUNT/AVG/SUM/MAX/MIN/GROUP 任一单词就放行聚合查询，
+# 于是「GROUP BY」里的 GROUP 就成了万能通行证，且 MIN/MAX 可返回真实单元格值。
+# 实测曾泄露：`SELECT MIN(name) FROM students` -> 他人姓名，
+# 并可配合 `WHERE name > 'x'` 迭代枚举全校 400 个姓名。
+# ---------------------------------------------------------------------------
+def _in_memory_students() -> sqlite3.Connection:
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE students (student_id TEXT, name TEXT, college TEXT, enroll_year INTEGER)")
+    conn.executemany(
+        "INSERT INTO students VALUES (?, ?, ?, ?)",
+        [("S001", "张三", "计算机学院", 2022),
+         ("S002", "李四", "文学院", 2023),
+         ("S003", "王五", "计算机学院", 2023)],
+    )
+    return conn
+
+
+def _student_guard() -> PermissionGuard:
+    return PermissionGuard(role="student", current_user="S001")
+
+
+def test_min_max_on_pii_column_rejected():
+    """MIN/MAX 作用于 name/student_id 会返回真实值 → 必须拒绝。"""
+    for sql in (
+        "SELECT MIN(name) FROM students",
+        "SELECT MAX(name) FROM students",
+        "SELECT MIN(name), MAX(name) FROM students",
+        "SELECT MIN(student_id) FROM students",
+    ):
+        r = _student_guard().check(sql)
+        assert not r.allowed, f"{sql} 泄露他人信息，应被拒绝"
+
+
+def test_pii_enough_enumeration_is_blocked():
+    """配合 WHERE name > 'x' 的迭代枚举必须被阻断（原可枚举全校姓名）。"""
+    conn = _in_memory_students()
+    leaked: list[str] = []
+    last = ""
+    for _ in range(10):
+        sql = f"SELECT MIN(name) FROM students WHERE name > '{last}'"
+        r = _student_guard().check(sql)
+        if not r.allowed:
+            break
+        row = conn.execute(r.rewritten_sql).fetchone()
+        if not row or row[0] is None:
+            break
+        last = row[0]
+        leaked.append(last)
+    conn.close()
+    assert leaked == [], f"仍可枚举他人姓名：{leaked}"
+
+
+def test_group_by_bare_column_projection_rejected():
+    """GROUP BY 不能作为「聚合」通行证：裸投影 PII 列仍须拒绝。"""
+    for sql in (
+        "SELECT name FROM students GROUP BY name",
+        "SELECT name, college FROM students GROUP BY name",
+        "SELECT student_id FROM students GROUP BY student_id",
+        "SELECT * FROM students",
+    ):
+        r = _student_guard().check(sql)
+        assert not r.allowed, f"{sql} 应被拒绝（GROUP 不等于聚合）"
+
+
+def test_group_concat_pii_rejected():
+    r = _student_guard().check("SELECT GROUP_CONCAT(name) FROM students")
+    assert not r.allowed, "GROUP_CONCAT(name) 会一次性泄露全部姓名"
+
+
+def test_legitimate_aggregation_still_allowed():
+    """真聚合 + 非 PII 维度仍应放行（不能因噎废食）。"""
+    conn = _in_memory_students()
+    cases = {
+        "SELECT COUNT(*) FROM students": 1,
+        "SELECT college, COUNT(*) FROM students GROUP BY college": 2,
+        "SELECT AVG(enroll_year) FROM students": 1,
+        "SELECT MIN(enroll_year) FROM students": 1,
+    }
+    for sql, expected_rows in cases.items():
+        r = _student_guard().check(sql)
+        assert r.allowed, f"{sql} 属合法聚合，不应被拒绝：{r.reason}"
+        rows = conn.execute(r.rewritten_sql).fetchall()
+        assert len(rows) == expected_rows, f"{sql} 返回 {len(rows)} 行"
+    conn.close()
+
+
+def test_aggregation_result_contains_no_names():
+    """合法聚合的返回值里不得出现任何他人姓名。"""
+    conn = _in_memory_students()
+    r = _student_guard().check("SELECT college, COUNT(*) FROM students GROUP BY college")
+    rows = conn.execute(r.rewritten_sql).fetchall()
+    conn.close()
+    flat = str([tuple(x) for x in rows])
+    for name in ("张三", "李四", "王五"):
+        assert name not in flat, f"聚合结果泄露了姓名 {name}：{flat}"
+
+
 if __name__ == "__main__":
     raise SystemExit(__import__("pytest").main([__file__, "-q"]))

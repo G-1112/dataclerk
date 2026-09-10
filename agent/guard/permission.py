@@ -50,6 +50,14 @@ _COLLEGE_RE = re.compile(r"\bcollege\s*=\s*['\"]([^'\"]+)['\"]", re.I)
 # current_user / user_id 白名单：仅允许字母数字下划线，杜绝注入
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
+# students 主表中的个人信息列：任何直接投影都会泄露他人隐私
+_PII_COLUMNS = {"name", "student_id"}
+# 真聚合函数（可安全返回统计量）
+_AGG_TYPES = ("Count", "Sum", "Avg", "Min", "Max")
+# 会返回「某个真实单元格值」的函数：
+# 作用于文本型 PII 列时等价于直接读出他人姓名（可用 WHERE 迭代枚举）
+_VALUE_LEAK_TYPES = ("Min", "Max", "GroupConcat")
+
 
 @dataclass
 class PermissionResult:
@@ -142,10 +150,15 @@ class PermissionGuard:
             if r is not None:
                 return r
 
-        # 7) student 角色查 students 主表：仅允许聚合，不允许查他人个人信息
+        # 7) student 角色查 students 主表：仅允许**真聚合**，且不得暴露个人信息列
+        #    （第三轮修复 R-PERM-01/02：原实现只要 SQL 里出现 COUNT/AVG/SUM/MAX/MIN/GROUP
+        #     任一单词就放行，导致
+        #       `SELECT name FROM students GROUP BY name`（GROUP 命中）泄露全部姓名；
+        #       `SELECT MIN(name) FROM students` 可配合 WHERE name > 'x' 迭代枚举全校姓名。)
         if self.role == "student" and STUDENT_MASTER_TABLE in tables:
-            if not re.search(r"\b(COUNT|AVG|SUM|MAX|MIN|GROUP)\b", sql, re.I):
-                return PermissionResult(False, "学生无权查询他人个人信息明细")
+            ok, why = self._student_master_allowed(sql)
+            if not ok:
+                return PermissionResult(False, why)
 
         # 8) teacher 角色：拒绝单生明细 + 本院系过滤
         if self.role == "teacher":
@@ -163,6 +176,56 @@ class PermissionGuard:
                 sql = injected
 
         return PermissionResult(True, "", sql)
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _node_types(names: tuple[str, ...]) -> tuple[type[exp.Expression], ...]:
+        """把类名元组解析为 sqlglot 表达式类（缺类时跳过，兼容版本差异）。"""
+        return tuple(t for t in (getattr(exp, n, None) for n in names) if isinstance(t, type))
+
+    def _student_master_allowed(self, sql: str) -> tuple[bool, str]:
+        """学生查 students 主表：必须使用真聚合，且不得暴露个人信息列。
+
+        返回 (是否允许, 拒绝原因)。
+        """
+        try:
+            parsed = sqlglot.parse_one(sql, read="sqlite")
+        except Exception:
+            return False, "无法解析查询，拒绝访问学生主表"
+
+        select = parsed if isinstance(parsed, exp.Select) else parsed.find(exp.Select)
+        if select is None:
+            return False, "学生无权查询他人个人信息明细"
+
+        agg_types = self._node_types(_AGG_TYPES)
+        leak_types = self._node_types(_VALUE_LEAK_TYPES)
+
+        has_agg = False
+        for projection in (select.expressions or []):
+            # 该投影里是否含真聚合函数
+            is_agg = bool(agg_types) and any(
+                projection.find(t) is not None for t in agg_types
+            )
+            if is_agg:
+                has_agg = True
+                # MIN/MAX/GROUP_CONCAT 作用在 PII 文本列上会返回真实值 → 拒绝
+                for t in leak_types:
+                    for fn in projection.find_all(t):
+                        for col in fn.find_all(exp.Column):
+                            if col.name.lower() in _PII_COLUMNS:
+                                return False, (
+                                    f"越权：聚合函数不可用于个人信息列（{col.name}），"
+                                    "该写法可泄露他人信息"
+                                )
+            else:
+                # 非聚合投影中直接出现 PII 列 → 泄露
+                for col in projection.find_all(exp.Column):
+                    if col.name.lower() in _PII_COLUMNS:
+                        return False, "学生无权查询他人个人信息明细"
+
+        if not has_agg:
+            return False, "学生查询学生主表须使用聚合函数（COUNT/AVG/SUM 等）"
+        return True, ""
 
     # ------------------------------------------------------------------
     def _apply_student_filter(self, sql: str) -> PermissionResult | None:
