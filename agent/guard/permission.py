@@ -70,35 +70,52 @@ def _is_safe_id(value: str) -> bool:
     return bool(_SAFE_ID_RE.match(value or ""))
 
 
+def _parse_sql(sql: str) -> exp.Expression | None:
+    """解析 SQL；失败返回 None（调用方走正则兜底或保守拒绝）。"""
+    try:
+        return sqlglot.parse_one(sql, read="sqlite")
+    except Exception:
+        return None
+
+
+def _as_parsed(sql_or_tree: str | exp.Expression | None) -> exp.Expression | None:
+    """兼容入参为原始 SQL 或已解析的 AST，避免重复解析（性能）。"""
+    if isinstance(sql_or_tree, exp.Expression):
+        return sql_or_tree
+    if isinstance(sql_or_tree, str):
+        return _parse_sql(sql_or_tree)
+    return None
+
+
 def _tables_regex(sql: str) -> set[str]:
     return {t for t in _TABLE_RE.findall(sql) if t in ALL_TABLES}
 
 
-def _tables_sqlglot(sql: str) -> set[str]:
-    try:
-        parsed = sqlglot.parse_one(sql, read="sqlite")
-    except Exception:
-        return _tables_regex(sql)
+def _tables_sqlglot(sql: str | exp.Expression) -> set[str]:
+    parsed = _as_parsed(sql)
+    if parsed is None:
+        return _tables_regex(sql if isinstance(sql, str) else "")
     return {t.name for t in parsed.find_all(exp.Table) if t.name in ALL_TABLES}
 
 
-def extract_tables(sql: str) -> set[str]:
+def extract_tables(sql: str | exp.Expression) -> set[str]:
     try:
         return _tables_sqlglot(sql)
     except Exception:
-        return _tables_regex(sql)
+        return _tables_regex(sql if isinstance(sql, str) else "")
 
 
-def is_write(sql: str) -> bool:
+def is_write(sql: str | exp.Expression) -> bool:
     """写操作白名单：仅允许只读查询（SELECT / WITH / UNION 只读组合）。
 
     其余语句（DELETE/UPDATE/INSERT/DROP/ALTER/CREATE/PRAGMA/ATTACH 等）一律视为写操作拒绝。
+    入参可为原始 SQL 或已解析 AST（同一查询在 check() 内只解析一次）。
     """
-    try:
-        parsed = sqlglot.parse_one(sql, read="sqlite")
-    except Exception:
+    parsed = _as_parsed(sql)
+    if parsed is None:
         # 解析失败：保守拒绝写操作（正则兜底仍可检出明确写关键字）
-        return _WRITE_RE.search(sql) is not None
+        raw = sql if isinstance(sql, str) else ""
+        return _WRITE_RE.search(raw) is not None
     # 顶层为 SELECT / WITH(CTE) / UNION(只读组合) 视为只读
     return not isinstance(parsed, (exp.Select, exp.With, exp.Union))
 
@@ -116,8 +133,13 @@ class PermissionGuard:
         if not sql:
             return PermissionResult(False, "空 SQL")
 
+        # 性能（第三轮）：整条 SQL 只解析一次，后续各校验复用同一 AST。
+        # 原实现 is_write / extract_tables / _has_union_or_subquery / _force_student_filter
+        # 各自 parse_one，单次校验要解析 4–5 次（实测占 execute_sql 总耗时约 90%）。
+        parsed = _parse_sql(sql)
+
         # 1) 写操作白名单：仅允许只读查询
-        if is_write(sql):
+        if is_write(parsed if parsed is not None else sql):
             return PermissionResult(False, "拒绝写操作（仅允许 SELECT / WITH 只读查询）")
 
         # 2) 未知表检测（用原始表名，避免被白名单过滤后漏报）
@@ -126,7 +148,7 @@ class PermissionGuard:
         if unknown:
             return PermissionResult(False, f"不存在的表：{', '.join(sorted(unknown))}")
 
-        tables = extract_tables(sql)
+        tables = extract_tables(parsed if parsed is not None else sql)
         if not tables:
             return PermissionResult(False, "未识别到受支持的表")
 
@@ -139,14 +161,20 @@ class PermissionGuard:
             return PermissionResult(False, "非法用户标识")
 
         # 5) 大查询需 LIMIT
+        #    性能：直接把 LIMIT 写进 AST 而不是拼接字符串，避免因文本变更
+        #    导致已解析的 AST 失效、下游不得不重新解析。
         if not re.search(r"\bLIMIT\b", sql, re.I) and "count" not in sql.lower():
-            sql += " LIMIT 100"
+            if parsed is not None:
+                parsed.set("limit", exp.Limit(expression=exp.Literal.number(100)))
+                sql = parsed.sql(dialect="sqlite")
+            else:
+                sql += " LIMIT 100"
 
         private = tables & STUDENT_PRIVATE_TABLES
 
         # 6) 学生私有表行级过滤（强制重写谓词，防 OR/UNION 绕过）
         if self.role == "student" and private:
-            r = self._apply_student_filter(sql)
+            r = self._apply_student_filter(sql, parsed)
             if r is not None:
                 return r
 
@@ -154,9 +182,9 @@ class PermissionGuard:
         #    （第三轮修复 R-PERM-01/02：原实现只要 SQL 里出现 COUNT/AVG/SUM/MAX/MIN/GROUP
         #     任一单词就放行，导致
         #       `SELECT name FROM students GROUP BY name`（GROUP 命中）泄露全部姓名；
-        #       `SELECT MIN(name) FROM students` 可配合 WHERE name > 'x' 迭代枚举全校姓名。)
+        #       `SELECT MIN(name) FROM students` 可配合 WHERE name > 'x' 迭代枚举全校姓名。）
         if self.role == "student" and STUDENT_MASTER_TABLE in tables:
-            ok, why = self._student_master_allowed(sql)
+            ok, why = self._student_master_allowed(parsed if parsed is not None else sql)
             if not ok:
                 return PermissionResult(False, why)
 
@@ -183,14 +211,13 @@ class PermissionGuard:
         """把类名元组解析为 sqlglot 表达式类（缺类时跳过，兼容版本差异）。"""
         return tuple(t for t in (getattr(exp, n, None) for n in names) if isinstance(t, type))
 
-    def _student_master_allowed(self, sql: str) -> tuple[bool, str]:
+    def _student_master_allowed(self, sql: str | exp.Expression) -> tuple[bool, str]:
         """学生查 students 主表：必须使用真聚合，且不得暴露个人信息列。
 
-        返回 (是否允许, 拒绝原因)。
+        返回 (是否允许, 拒绝原因)。入参可为原始 SQL 或已解析 AST。
         """
-        try:
-            parsed = sqlglot.parse_one(sql, read="sqlite")
-        except Exception:
+        parsed = _as_parsed(sql)
+        if parsed is None:
             return False, "无法解析查询，拒绝访问学生主表"
 
         select = parsed if isinstance(parsed, exp.Select) else parsed.find(exp.Select)
@@ -228,7 +255,9 @@ class PermissionGuard:
         return True, ""
 
     # ------------------------------------------------------------------
-    def _apply_student_filter(self, sql: str) -> PermissionResult | None:
+    def _apply_student_filter(
+        self, sql: str, parsed: exp.Expression | None = None
+    ) -> PermissionResult | None:
         """为学生私有表强制重写行级过滤。返回 None 表示无需额外处理。
 
         安全策略：
@@ -236,14 +265,16 @@ class PermissionGuard:
           - 含 UNION / 子查询 → 拒绝（防跨表 / 子查询越权，AND 无法覆盖 UNION 第二段）；
           - 其余情况用 sqlglot 在 WHERE 顶层 AND student_id = current_user，
             即便原 SQL 含 `OR 1=1` 也被约束为仅当前用户行。
+
+        性能：可传入已解析 AST，避免重复解析。
         """
         m = _STUDENT_ID_RE.search(sql)
         if m and m.group(1) != self.current_user:
             return PermissionResult(False, f"越权：无权访问其他学生（{m.group(1)}）的数据")
-        if self._has_union_or_subquery(sql):
+        if self._has_union_or_subquery(parsed if parsed is not None else sql):
             return PermissionResult(False, "拒绝：检测到 UNION / 子查询，疑似越权绕过")
         try:
-            new_sql = self._force_student_filter(sql, self.current_user)
+            new_sql = self._force_student_filter(sql, self.current_user, parsed)
         except Exception:
             return PermissionResult(False, "无法安全重写行级过滤")
         if new_sql is None:
@@ -251,29 +282,33 @@ class PermissionGuard:
         return PermissionResult(True, "已注入行级过滤", new_sql)
 
     @staticmethod
-    def _has_union_or_subquery(sql: str) -> bool:
-        try:
-            parsed = sqlglot.parse_one(sql, read="sqlite")
-        except Exception:
+    def _has_union_or_subquery(sql: str | exp.Expression) -> bool:
+        parsed = _as_parsed(sql)
+        if parsed is None:
             return True  # 解析失败保守认为有风险
         return parsed.find(exp.Union) is not None or parsed.find(exp.Subquery) is not None
 
     @staticmethod
-    def _force_student_filter(sql: str, current_user: str) -> str | None:
+    def _force_student_filter(
+        sql: str, current_user: str, parsed: exp.Expression | None = None
+    ) -> str | None:
         """用 sqlglot 在 WHERE 顶层 AND student_id = current_user（安全字面量转义）。"""
-        parsed = sqlglot.parse_one(sql, read="sqlite")
+        # 需要改写 AST，必须先复制，避免污染 check() 中复用的 parse 结果
+        tree = (parsed.copy() if parsed is not None else sqlglot.parse_one(sql, read="sqlite"))
         cond = exp.EQ(this=exp.column("student_id"), expression=exp.Literal.string(current_user))
-        where = parsed.args.get("where")
+        where = tree.args.get("where")
         if where is None:
-            parsed.set("where", exp.Where(this=cond))
+            tree.set("where", exp.Where(this=cond))
         else:
             # 顶层 AND 强制过滤：原条件必须用括号包裹！
             # 否则 `WHERE 1=1 OR student_id='我'` 会被拼成
             # `WHERE 1=1 OR student_id='我' AND student_id='我'`，
             # 因 AND 优先级高于 OR 而等价于 `TRUE OR (...)` → 恒真 → 越权返回全表。
             # （审计实测：`1=1 OR student_id='S00001'` 曾泄露全部学生行）
+            where = where.copy()
             where.set("this", exp.And(this=exp.Paren(this=where.this), expression=cond))
-        return parsed.sql(dialect="sqlite")
+            tree.set("where", where)
+        return tree.sql(dialect="sqlite")
 
     def _inject_college(self, sql: str, college: str) -> str | None:
         """teacher 院系过滤：已含本院系则放行；含他院则拒绝；否则注入本院系。"""

@@ -1,16 +1,69 @@
 """数据库连接与 schema 元数据。
 
 schema 元数据是 get_schema 工具与标准答案生成共用的唯一事实来源。
+
+性能（第三轮）：
+- 连接复用：`connect()` 返回的连接，其 `close()` 语义改为「归还到线程局部池」，
+  避免每次查询都重新打开 SQLite 句柄。实测新建连接约 1.5ms，
+  而索引后的典型查询仅约 0.1ms，即连接开销曾是查询本身的 10 倍以上。
+- 建索引：见 data/gen_db.py 的 INDEX_SQL（权限层恒定注入 student_id / college 过滤）。
 """
 
 from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 from pathlib import Path
 
 # 单条查询最多返回行数（防止 SELECT * 全表物化导致内存/配额耗尽）
 MAX_ROWS = int(os.getenv("DATACLERK_MAX_ROWS", "5000"))
+
+# 线程局部连接池：agent 会通过 asyncio.to_thread 在工作线程中执行查询，
+# sqlite3 连接默认不可跨线程共享，故按线程分池。
+_local = threading.local()
+
+
+def _thread_pool() -> dict:
+    pool = getattr(_local, "pool", None)
+    if pool is None:
+        pool = {}
+        _local.pool = pool
+    return pool
+
+
+def reset_pool() -> None:
+    """真正关闭并清空当前线程的连接池（测试与 DB 路径切换时调用）。"""
+    pool = getattr(_local, "pool", None)
+    if not pool:
+        return
+    for conn in pool.values():
+        try:
+            sqlite3.Connection.close(conn)
+        except Exception:  # noqa: BLE001
+            pass
+    pool.clear()
+
+
+class _PooledConnection(sqlite3.Connection):
+    """close() 归还到线程局部池而非真正关闭，从而复用底层句柄。
+
+    使用 sqlite3.Connection 而非包装类，保证 cursor()/execute()/set_progress_handler()
+    等全部原生 API 语义不变，现有调用点无需修改。
+    """
+
+    _pool_key: tuple | None = None
+
+    def close(self) -> None:  # noqa: D102
+        key = self._pool_key
+        if key is None:
+            sqlite3.Connection.close(self)
+            return
+        pool = _thread_pool()
+        # 幂等：已归还则不再重复放入
+        if pool.get(key) is not self:
+            pool[key] = self
+
 
 DEFAULT_DB = Path(os.getenv("DATACLERK_DB", str(Path(__file__).resolve().parent.parent / "data" / "campus.db")))
 
@@ -19,9 +72,13 @@ _CURRENT_DB: Path = DEFAULT_DB
 
 
 def set_db_path(path: str | Path) -> None:
-    """覆盖全局 DB 路径（测试与 Agent 初始化时调用）。"""
+    """覆盖全局 DB 路径（测试与 Agent 初始化时调用）。
+
+    切换 DB 时清空连接池，避免复用指向旧库的句柄。
+    """
     global _CURRENT_DB
     _CURRENT_DB = Path(path)
+    reset_pool()
 
 # 表 → (描述, [(列名, 中文说明), ...])
 SCHEMA: dict[str, tuple[str, list[tuple[str, str]]]] = {
@@ -81,14 +138,24 @@ def get_db_path() -> Path:
 
 
 def connect(db_path: str | Path | None = None, *, query_only: bool = True) -> sqlite3.Connection:
-    """打开 SQLite 连接。
+    """打开（或复用）SQLite 连接。
 
+    - 连接按 (路径, query_only) 缓存在线程局部池中，重复调用直接复用，
+      避免每次查询都付 1.5ms 的建连成本；`close()` 仅归还，不真正关闭。
     - query_only=True（默认）：设置 PRAGMA query_only，从引擎层阻断任何写操作，
       即使权限层被绕过也无法 INSERT/UPDATE/DELETE/DDL（纵深防御）。
     - busy_timeout：并发访问时最多等待 5s 而非立即抛 "database is locked"（性能）。
     """
     path = Path(db_path) if db_path else get_db_path()
-    conn = sqlite3.connect(str(path))
+    key = (str(path), query_only)
+
+    pool = _thread_pool()
+    conn = pool.get(key)
+    if conn is not None:
+        return conn
+
+    conn = sqlite3.connect(str(path), factory=_PooledConnection)
+    conn._pool_key = key  # type: ignore[attr-defined]
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA busy_timeout = 5000")
@@ -97,6 +164,7 @@ def connect(db_path: str | Path | None = None, *, query_only: bool = True) -> sq
     except sqlite3.Error:
         # 极老版本 SQLite 不支持 query_only 时退化为仅 busy_timeout
         pass
+    pool[key] = conn
     return conn
 
 
