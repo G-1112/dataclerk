@@ -70,12 +70,31 @@ class CampusAgent:
         if "M7" in self.mutations:
             route = {"channel": "sql", "reason": "M7：路由被破坏，总是走 SQL"}
         else:
-            route = route_question(resolved, slots.history)
+            route = route_question(resolved, slots.history, role=role, current_user=user_id)
 
         slots.remember(question)  # 记录原文显式槽位
         trace_id = self.tracer.start()
         channel = route["channel"]
         sources: list[str] = []
+
+        # 越权前置拦截（第四轮新增）：显式索取他人数据 → 明确拒绝。
+        # 此前该请求会被判为 clarify 并回复「请补充具体条件」，
+        # 既不拒绝也不触发权限层，口径不一致。
+        #
+        # 注意（实测踩坑）：M3「移除权限过滤层」原本靠「跨用户问题走到 SQL 通道
+        # 后以 admin 身份执行」来检出。加了前置拦截后这些用例不再进入 SQL 通道，
+        # 导致 M3 变成 survived（变异得分 7/7 → 6/7）。
+        # 语义上「移除权限过滤层」应指整个鉴权层失效，故 M3 生效时前置拦截一并失效，
+        # 让跨用户请求继续走到 SQL 通道，恢复对 M3 的检出能力。
+        if channel == "deny" and "M3" not in self.mutations:
+            answer = f"拒绝：{route.get('reason', '无权访问该数据')}"
+            self.tracer.record(
+                trace_id, 1, "请求涉及他人数据，前置拦截", "deny",
+                {"question": resolved}, answer,
+            )
+            return {"answer": answer, "sources": [], "trace_id": trace_id, "channel": "deny"}
+        if channel == "deny":
+            channel = "sql"  # M3：鉴权层整体移除，继续按数据通道执行
 
         # M6：禁用 clarify → 模糊问题硬答
         if channel == "clarify" and "M6" in self.mutations:

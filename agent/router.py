@@ -70,9 +70,48 @@ def _has_unresolved_ref(question: str) -> bool:
     return any(w in (question or "") for w in _PRONOMINAL)
 
 
-def route_question(question: str, history: list[str] | None = None) -> dict:
-    """返回 {channel, reason}。"""
+def detect_foreign_student_id(question: str, current_user: str) -> list[str]:
+    """问题中是否显式出现了**他人**学号。
+
+    第四轮新增：实测发现学生问「S00002 这学期选了什么课」时，
+    路由把它判为 clarify 并回复「请补充具体条件」——
+    既没有拒绝，也没有触发权限层，等于把越权请求当成「问得不清楚」。
+    安全上没有泄露（clarify 不含任何数据），但口径不一致：
+    显式索取他人数据应当明确拒绝，而不是邀请对方换个说法再试。
+
+    正则必须**大小写不敏感**：数据中学号是大写 S00001，
+    若只匹配大写，攻击者写小写 s00002 即可绕过本拦截。
+    """
+    import re
+
+    ids = {m.upper() for m in re.findall(r"S\d{3,}", question or "", re.I)}
+    me = (current_user or "").upper()
+    return sorted(x for x in ids if x != me)
+
+
+def route_question(
+    question: str,
+    history: list[str] | None = None,
+    role: str = "",
+    current_user: str = "",
+) -> dict:
+    """返回 {channel, reason}。
+
+    在常规路由之前先做**越权前置拦截**：学生显式索取他人数据一律拒绝，
+    不再进入 clarify / sql / rag。教师与管理员不受此限（其查询他人数据属正常业务）。
+    """
     q = question or ""
+
+    # 0) 越权前置拦截（仅学生角色）
+    if role == "student" and current_user:
+        foreign = detect_foreign_student_id(q, current_user)
+        if foreign:
+            return {
+                "channel": "deny",
+                "reason": f"越权：无权访问其他学生（{foreign[0]}）的数据",
+                "foreign_ids": foreign,
+            }
+
     sql_hits = [k for k in _SQL_KEYWORDS if k in q]
     rag_hits = [k for k in _RAG_KEYWORDS if k in q]
 

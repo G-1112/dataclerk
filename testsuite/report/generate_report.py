@@ -245,6 +245,31 @@ def _comparison_section(prev_metrics: dict | None, metrics: dict) -> str:
     return f'<div class="card"><h2>与上次对比</h2>{body}{verdict}</div>'
 
 
+def _trace_section(results: list[dict], failed: list[dict]) -> str:
+    """思考-行动链路审计区块（第四轮新增）。
+
+    对应赛道三路径二「智能体行为可视化与审计平台：记录并可视化智能体的
+    思考-行动链路，辅助缺陷定位」。优先展示失败用例（最需要定位），
+    失败不足时用通过用例补足，保证报告里总能看到链路样本。
+    """
+    from . import trace_view as tv
+
+    picks = list(failed)
+    if len(picks) < 3:
+        picks += [r for r in results if r.get("passed")][: 5 - len(picks)]
+    return tv.render_audit_html(picks, limit=5)
+
+
+# 思考-行动链路时间线样式（与 trace_view.TRACE_VIEW_CSS 同一套）。
+# 注意：本报告模板是 f-string，但**被替换进去的值不会被再次解析花括号**，
+# 因此这里必须原样返回 CSS；若在此处转义成 {{ }} 反而会在输出里留下双花括号
+# （实测踩坑：曾误以为替换值也会走 f-string 转义）。
+def _trace_css_for_report() -> str:
+    from .trace_view import TRACE_VIEW_CSS
+
+    return TRACE_VIEW_CSS
+
+
 def render_html(
     metrics: dict, mutation: dict, results: list[dict], prev_metrics: dict | None = None
 ) -> str:
@@ -313,6 +338,7 @@ code.cmd{{background:#f1f5f9;border:1px solid #cbd5e1;border-radius:6px;padding:
 code.cmd:hover{{background:#e0e7ff;border-color:#818cf8}}
 code.cmd.copied{{background:#dcfce7;border-color:#4ade80}}
 code.cmd.copied::after{{content:" ✓ 已复制";color:#16a34a;font-weight:700}}
+{_trace_css_for_report()}
 </style></head><body>
 <h1>问数官 · 智能体可靠性测试报告</h1>
 
@@ -347,6 +373,8 @@ code.cmd.copied::after{{content:" ✓ 已复制";color:#16a34a;font-weight:700}}
 <p class="muted">按通过率升序排列，最上面的即当前最弱维度。</p></div>
 
 {_comparison_section(prev_metrics, metrics)}
+
+{_trace_section(results, failed)}
 
 <div class="card"><h2>缺陷分类与定位</h2>
 {sev_summary}
