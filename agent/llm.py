@@ -77,7 +77,8 @@ def _extract_college(q: str) -> str | None:
 
 
 def _extract_semester(q: str) -> str | None:
-    m = re.search(r"(20\d{2})年(春|秋)季", q)
+    # 允许数字与量词之间存在空格（口语化输入常见：「2024 年春季」）
+    m = re.search(r"(20\d{2})\s*年\s*(春|秋)\s*季", q)
     if m:
         return f"{m.group(1)}-{'SPRING' if m.group(2) == '春' else 'FALL'}"
     return None
@@ -89,7 +90,10 @@ def _extract_student_id(q: str) -> str | None:
 
 
 def _extract_grade(q: str) -> str | None:
-    m = re.search(r"(20\d{2})级", q)
+    # 修复（第三轮）：原正则 r"(20\d{2})级" 不含空格，
+    # 而「理学院 2024 级有多少学生？」这类输入数字与「级」之间带空格，
+    # 导致年级条件被静默丢弃 —— SQL 退化为只按学院聚合（实测 51 而非 9）。
+    m = re.search(r"(20\d{2})\s*级", q)
     return m.group(1) if m else None
 
 

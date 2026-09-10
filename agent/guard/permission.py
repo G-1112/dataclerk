@@ -46,6 +46,9 @@ _WRITE_RE = re.compile(
 )
 _TABLE_RE = re.compile(r"\b(?:FROM|JOIN|INTO|UPDATE|TABLE)\s+([a-zA-Z_][\w]*)", re.I)
 _STUDENT_ID_RE = re.compile(r"\bstudent_id\s*=\s*['\"]?([A-Za-z0-9_]+)['\"]?", re.I)
+# 学号形态字面量（S + 至少 3 位数字），用于捕获 IN (...) / 比较等非 `=` 形式的他人引用。
+# 数据中仅 student_id 使用 S 前缀（teacher=T / course=C / room=R / book=B），故无误伤。
+_STUDENT_ID_LITERAL_RE = re.compile(r"\bS\d{3,}\b", re.I)
 _COLLEGE_RE = re.compile(r"\bcollege\s*=\s*['\"]([^'\"]+)['\"]", re.I)
 # current_user / user_id 白名单：仅允许字母数字下划线，杜绝注入
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_]+$")
@@ -266,11 +269,21 @@ class PermissionGuard:
           - 其余情况用 sqlglot 在 WHERE 顶层 AND student_id = current_user，
             即便原 SQL 含 `OR 1=1` 也被约束为仅当前用户行。
 
+        第三轮加固（R-PERM-03）：原实现用 search() 只看**第一个** student_id 字面量，
+        于是 `student_id='我' OR student_id='他人'` 会因首个匹配恰好是自己而被放行
+        （虽然行级过滤仍把结果约束为本人，无真实泄露，但显式引用他人应当直接拒绝）。
+        改为 findall()：只要出现任何一个非本人 ID 即拒绝。
+
         性能：可传入已解析 AST，避免重复解析。
         """
-        m = _STUDENT_ID_RE.search(sql)
-        if m and m.group(1) != self.current_user:
-            return PermissionResult(False, f"越权：无权访问其他学生（{m.group(1)}）的数据")
+        refs = _STUDENT_ID_RE.findall(sql)
+        others = [x for x in refs if x != self.current_user]
+        # 补充：`student_id IN ('我','他人')` 等非 `=` 形式不会被上面的正则捕获，
+        # 改为扫描全部学号形态字面量（S + 5 位数字），出现他人即拒绝。
+        if not others:
+            others = [x for x in _STUDENT_ID_LITERAL_RE.findall(sql) if x != self.current_user]
+        if others:
+            return PermissionResult(False, f"越权：无权访问其他学生（{others[0]}）的数据")
         if self._has_union_or_subquery(parsed if parsed is not None else sql):
             return PermissionResult(False, "拒绝：检测到 UNION / 子查询，疑似越权绕过")
         try:

@@ -250,5 +250,46 @@ def test_aggregation_result_contains_no_names():
         assert name not in flat, f"聚合结果泄露了姓名 {name}：{flat}"
 
 
+# ---------------------------------------------------------------------------
+# 第三轮加固 R-PERM-03：多个 student_id 字面量
+# 原实现用 search() 只检查第一个匹配，遇到
+#   student_id='本人' OR student_id='他人'
+# 时首个匹配恰好是自己而放行（虽有行级过滤兜底，但显式引用他人应直接拒绝）。
+# ---------------------------------------------------------------------------
+def test_any_foreign_student_id_is_rejected():
+    guard = _student_guard()
+    for sql in (
+        "SELECT * FROM enrollments WHERE student_id = 'S001' OR student_id = 'S002'",
+        "SELECT * FROM enrollments WHERE student_id = 'S002' OR student_id = 'S001'",
+        "SELECT * FROM enrollments WHERE student_id IN ('S001', 'S002')",
+        "SELECT * FROM enrollments WHERE student_id = 'S002'",
+    ):
+        r = guard.check(sql)
+        assert not r.allowed, f"{sql} 显式引用了他人 ID，应被拒绝"
+
+
+def test_own_student_id_still_allowed():
+    guard = _student_guard()
+    r = guard.check("SELECT * FROM enrollments WHERE student_id = 'S001'")
+    assert r.allowed, r.reason
+
+
+def test_filter_never_leaks_other_students():
+    """行级过滤兜底：任何被放行的查询，实跑都只能返回本人行。"""
+    conn = _in_memory_enrollments()
+    guard = PermissionGuard(role="student", current_user="S001")
+    sqls = [
+        "SELECT * FROM enrollments WHERE 1=1 OR student_id='S001'",
+        "SELECT * FROM enrollments WHERE student_id='S001' OR 'x'='x'",
+        "SELECT * FROM enrollments",
+    ]
+    for sql in sqls:
+        r = guard.check(sql)
+        assert r.allowed, f"{sql} 应放行（靠过滤约束）"
+        ids = {row[0] for row in conn.execute(r.rewritten_sql).fetchall()}
+        assert ids <= {"S001"}, f"{sql} 泄露了 {ids - {'S001'}}"
+    conn.close()
+
+
 if __name__ == "__main__":
     raise SystemExit(__import__("pytest").main([__file__, "-q"]))
