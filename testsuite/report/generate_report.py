@@ -63,23 +63,57 @@ def classify_defect(result: dict) -> dict:
     return {"label": label, "severity": sev, "advice": advice, "dimension": dim}
 
 
+def _repro_command(case_id: str) -> str:
+    """生成失败用例的一键复现命令（与 run_suite --case 对应）。"""
+    return f"python -m testsuite.run_suite --case {case_id}"
+
+
 def _defect_rows(failed: list[dict]) -> str:
-    """生成带 data-* 属性的可筛选缺陷行。"""
+    """生成带 data-* 属性的可筛选缺陷行，并给出复现命令。"""
     rows = []
     for r in failed:
         d = classify_defect(r)
         sev_cls = {"P0": "sev-p0", "P1": "sev-p1", "P2": "sev-p2"}.get(d["severity"], "")
+        cid = r.get("id", "")
+        # 多变体生成的用例 ID（如 multiturn 的 xxx-问题）取原始前缀
+        base_id = cid.split("-")[0] + "-" + cid.split("-")[1] if cid.count("-") >= 1 else cid
+        cmd = _repro_command(base_id)
         rows.append(
             f'<tr class="defect-row" data-sev="{d["severity"]}" data-dim="{d["dimension"]}">'
             f'<td><span class="sev {sev_cls}">{d["severity"]}</span></td>'
-            f'<td>{r.get("id","")}</td>'
+            f'<td>{cid}</td>'
             f'<td>{d["label"]}</td>'
             f'<td>{str(r.get("question",""))[:50]}</td>'
             f'<td>{str(r.get("answer",""))[:70]}</td>'
             f'<td class="muted">{d["advice"]}</td>'
+            f'<td><code class="cmd" title="点击复制" data-cmd="{cmd}">{cmd}</code></td>'
             f"</tr>"
         )
-    return "".join(rows) or '<tr><td colspan="6">无失败用例</td></tr>'
+    return "".join(rows) or '<tr><td colspan="7">无失败用例</td></tr>'
+
+
+def _dimension_pass_table(results: list[dict]) -> str:
+    """按维度统计用例通过率（分项一览），让「哪些维度弱」一眼可见。"""
+    agg: dict[str, list[int]] = {}
+    for r in results:
+        dim = r.get("dimension") or "unknown"
+        bucket = agg.setdefault(dim, [0, 0])
+        bucket[1] += 1
+        if r.get("passed"):
+            bucket[0] += 1
+
+    label_map = {k: v[1] for k, v in zip([d[0] for d in DIMENSIONS], DIMENSIONS)}
+    rows = []
+    for dim, (ok, total) in sorted(agg.items(), key=lambda kv: (kv[1][0] / kv[1][1]) if kv[1][1] else 0):
+        rate = ok / total if total else 0
+        bar_w = int(rate * 100)
+        color = "#16a34a" if rate >= 0.95 else ("#d97706" if rate >= 0.8 else "#dc2626")
+        rows.append(
+            f"<tr><td>{label_map.get(dim, dim)}</td><td>{ok}/{total}</td><td>{rate:.1%}</td>"
+            f'<td><div class="bar"><div class="bar-fill" style="width:{bar_w}%;background:{color}"></div></div></td></tr>'
+        )
+    return "".join(rows) or "<tr><td colspan='4'>无用例</td></tr>"
+
 
 
 def _severity_summary(failed: list[dict]) -> str:
@@ -173,6 +207,7 @@ def render_html(metrics: dict, mutation: dict, results: list[dict]) -> str:
     failed = [r for r in results if not r.get("passed")]
     failed_rows = _defect_rows(failed)
     sev_summary = _severity_summary(failed)
+    dim_pass_rows = _dimension_pass_table(results)
     dim_options = "".join(
         f'<option value="{d[0]}">{d[1]}</option>' for d in DIMENSIONS
     )
@@ -211,6 +246,12 @@ th{{background:#f1f5f9}}
 .filters label{{font-size:13px;color:#475569;display:flex;flex-direction:column;gap:4px}}
 .filters select,.filters input{{padding:5px 8px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;min-width:130px}}
 .filters input{{min-width:200px}}
+.bar{{background:#e2e8f0;border-radius:6px;height:12px;width:140px;overflow:hidden;display:inline-block;vertical-align:middle}}
+.bar-fill{{height:100%;border-radius:6px}}
+code.cmd{{background:#f1f5f9;border:1px solid #cbd5e1;border-radius:6px;padding:2px 8px;cursor:pointer;font-size:12px;white-space:nowrap;display:inline-block}}
+code.cmd:hover{{background:#e0e7ff;border-color:#818cf8}}
+code.cmd.copied{{background:#dcfce7;border-color:#4ade80}}
+code.cmd.copied::after{{content:" ✓ 已复制";color:#16a34a;font-weight:700}}
 </style></head><body>
 <h1>问数官 · 智能体可靠性测试报告</h1>
 
@@ -239,6 +280,11 @@ th{{background:#f1f5f9}}
 {mut_rows}</table>
 <p class="muted">判据：目标维度指标降幅 > 20% 判为 killed（测试集能抓到该缺陷）；否则 survived（存在盲区）。</p></div>
 
+<div class="card"><h2>分项通过率</h2>
+<table><tr><th>维度</th><th>通过/总数</th><th>通过率</th><th>分布</th></tr>
+{dim_pass_rows}</table>
+<p class="muted">按通过率升序排列，最上面的即当前最弱维度。</p></div>
+
 <div class="card"><h2>缺陷分类与定位</h2>
 {sev_summary}
 <div class="filters">
@@ -262,8 +308,10 @@ th{{background:#f1f5f9}}
   <span class="muted" id="f-count"></span>
 </div>
 <table id="defect-table">
-<tr><th>严重度</th><th>用例</th><th>类别</th><th>问题</th><th>回答/错误</th><th>修复建议</th></tr>
-{failed_rows}</table></div>
+<tr><th>严重度</th><th>用例</th><th>类别</th><th>问题</th><th>回答/错误</th><th>修复建议</th><th>复现命令</th></tr>
+{failed_rows}</table>
+<p class="muted">点击「复现命令」即可复制，粘贴到终端可单独重跑该用例：
+<code>python -m testsuite.run_suite --list-cases</code> 可列出全部用例 ID。</p></div>
 
 <div class="card"><h2>质量-成本</h2>
 <p>全量跑批 {len(results)} 条用例，标准答案由 SQLite 自动执行生成（零人工标注）。
@@ -301,6 +349,28 @@ th{{background:#f1f5f9}}
     el.addEventListener("change", apply);
   }});
   apply();
+
+  // 复现命令一键复制
+  document.querySelectorAll("code.cmd").forEach(function (el) {{
+    el.addEventListener("click", function () {{
+      var text = el.dataset.cmd || el.textContent;
+      function done() {{
+        el.classList.add("copied");
+        setTimeout(function () {{ el.classList.remove("copied"); }}, 1200);
+      }}
+      if (navigator.clipboard && navigator.clipboard.writeText) {{
+        navigator.clipboard.writeText(text).then(done, function () {{}});
+      }} else {{
+        // 离线/非安全上下文兜底
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        try {{ document.execCommand("copy"); done(); }} catch (e) {{}}
+        document.body.removeChild(ta);
+      }}
+    }});
+  }});
 }})();
 </script>
 </body></html>"""

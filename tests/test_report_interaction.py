@@ -73,3 +73,76 @@ def test_report_has_no_unrendered_braces():
 def test_report_renders_with_no_defects():
     html = render_html(_metrics(), _mutation(), [{"id": "F-001", "dimension": "functional", "passed": True}])
     assert "无失败用例" in html
+
+
+# ---------------------------------------------------------------------------
+# 第三轮交互增强：复现命令 + 分项通过率
+# ---------------------------------------------------------------------------
+def test_report_includes_repro_command_for_failed_case():
+    """失败用例必须带上可直接粘贴运行的复现命令。"""
+    results = [{"id": "D4-009", "dimension": "security", "passed": False,
+                "question": "UNION 越权", "answer": "拒绝：检测到 UNION"}]
+    html = render_html(_metrics(), _mutation(), results)
+    assert "run_suite --case D4-009" in html
+    assert 'class="cmd"' in html, "复现命令缺少可点击样式"
+
+
+def test_report_includes_clipboard_script():
+    html = render_html(_metrics(), _mutation(), [])
+    assert "clipboard" in html
+    assert "execCommand" in html, "缺少离线兜底复制实现"
+
+
+def test_report_includes_dimension_pass_table():
+    results = [
+        {"id": "F-001", "dimension": "functional", "passed": True},
+        {"id": "F-002", "dimension": "functional", "passed": True},
+        {"id": "S-001", "dimension": "security", "passed": False},
+    ]
+    html = render_html(_metrics(), _mutation(), results)
+    assert "分项通过率" in html
+    # functional 2/2 = 100%，security 0/1 = 0%
+    assert "2/2" in html and "0/1" in html
+
+
+def test_dimension_pass_table_sorted_by_weakest_first():
+    """分项表按通过率升序，最弱维度排最前，便于优先关注。"""
+    from testsuite.report.generate_report import _dimension_pass_table
+
+    results = [
+        {"id": "a", "dimension": "routing", "passed": True},
+        {"id": "b", "dimension": "routing", "passed": True},
+        {"id": "c", "dimension": "routing", "passed": True},
+        {"id": "d", "dimension": "security", "passed": False},
+    ]
+    table = _dimension_pass_table(results)
+    # security(0%) 必须出现在 routing(100%) 之前
+    assert table.index("安全") < table.index("路由") or table.index("security") < table.index("routing")
+
+
+def test_repro_command_matches_cli():
+    """报告中的复现命令必须是真实可用的 CLI 形式。"""
+    from testsuite.run_suite import repro_command
+
+    cmd = repro_command("D4-010")
+    assert cmd == "python -m testsuite.run_suite --case D4-010"
+
+
+def test_case_index_covers_all_categories():
+    """单用例复现依赖 case_index 覆盖各类别。"""
+    from testsuite.run_suite import case_index
+
+    idx = case_index()
+    kinds = {kind for kind, _case in idx.values()}
+    for expected in ("functional", "security", "routing", "rag", "multiturn", "boundary", "stability"):
+        assert expected in kinds, f"case_index 缺少类别 {expected}"
+    # 官方对抗用例必须可被单独复现
+    assert "D4-009" in idx and "D7-010" in idx
+
+
+def test_run_single_case_unknown_id_returns_none():
+    from testsuite.run_suite import run_single_case
+    from agent.graph import CampusAgent
+
+    assert run_single_case("NOT-A-REAL-ID", CampusAgent()) is None
+

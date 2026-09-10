@@ -4,6 +4,11 @@
     python -m testsuite.run_suite --db data/campus_small.db
     python -m testsuite.run_suite --db data/campus.db --out report/
 
+单用例复现（第三轮交互增强）：
+    python -m testsuite.run_suite --list-cases          # 列出全部用例 ID
+    python -m testsuite.run_suite --case D4-010         # 只跑该用例并打印详情
+    python -m testsuite.run_suite --case D4-010,D7-009  # 支持逗号分隔多个
+
 产出：metrics.json + report.html + traces/*.jsonl
 """
 
@@ -205,6 +210,57 @@ def run_performance(agent: CampusAgent, client: AgentClient, questions: list[str
 
 
 # ---------------------------------------------------------------------------
+def case_index() -> dict[str, tuple[str, dict]]:
+    """全部用例 ID → (类别, 用例定义) 的索引，供单用例复现使用。"""
+    idx: dict[str, tuple[str, dict]] = {}
+    for c in functional_cases():
+        idx[c["id"]] = ("functional", c)
+    for c in security_cases():
+        idx[c["id"]] = ("security", c)
+    for c in routing_cases():
+        idx[c["id"]] = ("routing", c)
+    for c in rag_cases():
+        idx[c["id"]] = ("rag", c)
+    for c in MULTITURN:
+        idx[c["id"]] = ("multiturn", c)
+    for c in boundary_cases():
+        idx[c["id"]] = ("boundary", c)
+    for c in STABILITY:
+        idx[c["id"]] = ("stability", c)
+    return idx
+
+
+def run_single_case(case_id: str, agent: CampusAgent) -> list[dict] | None:
+    """只跑一条用例，返回其结果列表；未知 ID 返回 None。"""
+    idx = case_index()
+    if case_id not in idx:
+        return None
+    kind, case = idx[case_id]
+    client = AgentClient(agent)
+    if kind == "functional":
+        return run_functional([case], client)
+    if kind == "security":
+        return run_security([case], client)
+    if kind == "routing":
+        return run_routing([case], client)
+    if kind == "rag":
+        results, _ = run_rag([case], client)
+        return results
+    if kind == "multiturn":
+        return run_multiturn([case], client)
+    if kind == "boundary":
+        return run_boundary([case], client)
+    if kind == "stability":
+        return run_stability([case], client)
+    return None
+
+
+def repro_command(case_id: str) -> str:
+    """生成该用例的一键复现命令（写入报告，便于直接定位问题）。"""
+    return f"python -m testsuite.run_suite --case {case_id}"
+
+
+# ---------------------------------------------------------------------------
 def run_all(agent: CampusAgent, with_rag_eval: bool = True) -> dict:
     """跑全量用例，返回 {results, metrics}。"""
     client = AgentClient(agent)
@@ -279,7 +335,46 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="问数官测试套件一键跑批")
     ap.add_argument("--db", default=None)
     ap.add_argument("--out", default="data/report")
+    ap.add_argument("--list-cases", action="store_true", help="列出全部用例 ID 后退出")
+    ap.add_argument("--case", default=None, help="只跑指定用例（支持逗号分隔），用于复现失败")
     args = ap.parse_args()
+
+    if args.list_cases:
+        idx = case_index()
+        print(f"共 {len(idx)} 条用例：")
+        for cid, (kind, case) in idx.items():
+            q = case.get("question") or (case.get("sql") or "")[:40]
+            print(f"  {cid:10s} [{kind:10s}] {str(q)[:46]}")
+        return 0
+
+    if args.case:
+        targets = [c.strip() for c in args.case.split(",") if c.strip()]
+        agent = CampusAgent(db_path=args.db) if args.db else CampusAgent()
+        idx = case_index()
+        unknown = [t for t in targets if t not in idx]
+        if unknown:
+            print(f"未知用例 ID：{', '.join(unknown)}")
+            print("可用：python -m testsuite.run_suite --list-cases")
+            return 2
+        exit_code = 0
+        for cid in targets:
+            kind, case = idx[cid]
+            print(f"\n=== {cid} [{kind}] ===")
+            print(f"  定义：{json.dumps(case, ensure_ascii=False)[:200]}")
+            rows = run_single_case(cid, agent) or []
+            for r in rows:
+                status = "PASS" if r.get("passed") else "FAIL"
+                if status == "FAIL":
+                    exit_code = 1
+                print(f"  [{status}] {r.get('id', '')} 维度={r.get('dimension', '')}")
+                if r.get("question"):
+                    print(f"         问题：{r['question'][:80]}")
+                if r.get("answer"):
+                    print(f"         回答：{str(r['answer'])[:120]}")
+                if r.get("error"):
+                    print(f"         错误：{str(r['error'])[:120]}")
+            print(f"  复现命令：{repro_command(cid)}")
+        return exit_code
 
     t0 = time.time()
     agent = CampusAgent(db_path=args.db) if args.db else CampusAgent()
