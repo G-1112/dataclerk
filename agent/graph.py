@@ -163,4 +163,6 @@ def _format_sql_result(result: dict) -> str:
     body = "\n".join(lines)
     if len(rows) > 20:
         body += f"\n…（共 {len(rows)} 行，仅显示前 20 行）"
+    if result.get("truncated"):
+        body += "\n（注：结果集过大已被截断，如需完整数据请加聚合或筛选条件）"
     return body

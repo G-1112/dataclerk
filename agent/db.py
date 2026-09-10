@@ -9,6 +9,9 @@ import os
 import sqlite3
 from pathlib import Path
 
+# 单条查询最多返回行数（防止 SELECT * 全表物化导致内存/配额耗尽）
+MAX_ROWS = int(os.getenv("DATACLERK_MAX_ROWS", "5000"))
+
 DEFAULT_DB = Path(os.getenv("DATACLERK_DB", str(Path(__file__).resolve().parent.parent / "data" / "campus.db")))
 
 # 当前生效的 DB 路径（可被 CampusAgent / 测试套件通过 set_db_path 覆盖）
@@ -77,10 +80,23 @@ def get_db_path() -> Path:
     return Path(_CURRENT_DB)
 
 
-def connect(db_path: str | Path | None = None) -> sqlite3.Connection:
+def connect(db_path: str | Path | None = None, *, query_only: bool = True) -> sqlite3.Connection:
+    """打开 SQLite 连接。
+
+    - query_only=True（默认）：设置 PRAGMA query_only，从引擎层阻断任何写操作，
+      即使权限层被绕过也无法 INSERT/UPDATE/DELETE/DDL（纵深防御）。
+    - busy_timeout：并发访问时最多等待 5s 而非立即抛 "database is locked"（性能）。
+    """
     path = Path(db_path) if db_path else get_db_path()
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA busy_timeout = 5000")
+        if query_only:
+            conn.execute("PRAGMA query_only = ON")
+    except sqlite3.Error:
+        # 极老版本 SQLite 不支持 query_only 时退化为仅 busy_timeout
+        pass
     return conn
 
 

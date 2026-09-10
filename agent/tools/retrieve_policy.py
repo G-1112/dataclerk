@@ -66,7 +66,7 @@ class PolicyRetriever:
         snippets = self.load()
         if not snippets:
             return []
-        qvec = _bigrams(query)
+        qvec = _query_vector(query)
         scored = sorted(((_cosine(qvec, s.vector), s) for s in snippets), key=lambda x: -x[0])
         return [f"[{s.title} · {s.section}] {s.text}" for score, s in scored[:top_k] if score > 0.02]
 
@@ -74,7 +74,7 @@ class PolicyRetriever:
         snippets = self.load()
         if not snippets:
             return []
-        qvec = _bigrams(query)
+        qvec = _query_vector(query)
         scored = sorted(((_cosine(qvec, s.vector), s) for s in snippets), key=lambda x: -x[0])
         return [
             {"doc_id": s.doc_id, "title": s.title, "section": s.section, "text": s.text, "score": round(score, 4)}
@@ -83,6 +83,20 @@ class PolicyRetriever:
 
 
 retriever = PolicyRetriever()
+
+# 查询向量缓存：同一 query 重复出现时免去 bigram 重建（LRU 上限 256）。
+_QUERY_VEC_CACHE: dict[str, Counter] = {}
+_QUERY_VEC_CACHE_MAX = 256
+
+
+def _query_vector(query: str) -> Counter:
+    v = _QUERY_VEC_CACHE.get(query)
+    if v is None:
+        v = _bigrams(query)
+        if len(_QUERY_VEC_CACHE) >= _QUERY_VEC_CACHE_MAX:
+            _QUERY_VEC_CACHE.pop(next(iter(_QUERY_VEC_CACHE)))
+        _QUERY_VEC_CACHE[query] = v
+    return v
 
 
 def retrieve_policy(query: str, top_k: int = 3) -> list[str]:
