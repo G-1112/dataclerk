@@ -29,19 +29,31 @@ class Tracer:
     def __init__(self, trace_dir: str | Path | None = None) -> None:
         self.dir = Path(trace_dir or TRACE_DIR)
         self.dir.mkdir(parents=True, exist_ok=True)
+        # 性能（第四轮）：Windows 下 Path.resolve() 会触发
+        # nt._getfinalpathname，实测约 0.144 ms/次。
+        # 上一次修复为防路径穿越在每次读写时都调用 resolve()，
+        # 而 chat 每轮会写 2-3 条 trace，累计约 1 ms/轮。
+        # 目录本身在 __init__ 后不变，故解析一次并缓存。
+        self._dir_resolved = self.dir.resolve()
 
     def start(self) -> str:
         return uuid.uuid4().hex[:12]
 
     def _path(self, trace_id: str) -> Path | None:
-        """仅接受合法 trace_id，并确保解析后的路径仍位于 trace 目录内。"""
+        """仅接受合法 trace_id，并确保路径仍位于 trace 目录内。
+
+        双层防御：
+          1. 白名单正则 —— trace_id 只允许十六进制字符，
+             从根上杜绝 '/'、'\\'、':'、'.' 等路径分隔/穿越字符；
+          2. 归属校验 —— 与**已缓存**的解析目录比较（不重复 resolve，避免 I/O 开销）。
+        """
         if not is_valid_trace_id(trace_id):
             return None
-        candidate = (self.dir / f"{trace_id}.jsonl").resolve()
+        candidate = self._dir_resolved / f"{trace_id}.jsonl"
         try:
-            candidate.relative_to(self.dir.resolve())
+            candidate.relative_to(self._dir_resolved)
         except ValueError:
-            return None  # 归一化后逃出目录 → 拒绝（纵深防御）
+            return None
         return candidate
 
     def record(

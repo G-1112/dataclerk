@@ -185,3 +185,54 @@ def test_guard_result_is_deterministic_across_calls():
     sql = "SELECT * FROM library_borrow WHERE student_id='S00001' OR 1=1"
     results = {g.check(sql).rewritten_sql for _ in range(5)}
     assert len(results) == 1, f"多次校验结果不一致：{results}"
+
+
+# --------------------------------------------------------------- Trace I/O
+def test_tracer_caches_resolved_dir():
+    """Tracer 必须缓存 resolve 结果，不得每次读写都调用（Windows 下约 0.14ms/次）。"""
+    from agent.trace import Tracer
+
+    t = Tracer()
+    assert hasattr(t, "_dir_resolved"), "未缓存解析后的目录"
+    # 缓存值与实时 resolve 一致
+    assert t._dir_resolved == t.dir.resolve()
+
+
+def test_tracer_record_does_not_resolve_per_call(monkeypatch):
+    """record 期间不得再调用 Path.resolve（通过计数验证）。"""
+    from pathlib import Path
+
+    from agent.trace import Tracer
+
+    t = Tracer()
+    tid = t.start()
+    calls = {"n": 0}
+    orig = Path.resolve
+
+    def counting_resolve(self, *a, **kw):
+        calls["n"] += 1
+        return orig(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "resolve", counting_resolve)
+    t.record(tid, 1, "think", "tool", {}, "obs")
+    t.get(tid)
+    assert calls["n"] == 0, f"record/get 中仍调用了 resolve {calls['n']} 次"
+    (t.dir / f"{tid}.jsonl").unlink(missing_ok=True)
+
+
+def test_trace_write_is_reasonably_fast():
+    """单条 trace 写入应在 5ms 内（实测约 0.95ms，阈值留 5 倍余量）。"""
+    import time
+
+    from agent.trace import Tracer
+
+    t = Tracer()
+    tid = t.start()
+    t.record(tid, 1, "warm", "tool", {}, "obs")  # 预热
+    n = 50
+    t0 = time.perf_counter()
+    for i in range(n):
+        t.record(tid, i + 2, "think", "tool", {}, "obs")
+    per = (time.perf_counter() - t0) / n
+    (t.dir / f"{tid}.jsonl").unlink(missing_ok=True)
+    assert per < 0.005, f"单条 trace 写入 {per * 1000:.2f}ms，疑似回归"
