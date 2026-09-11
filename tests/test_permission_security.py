@@ -140,6 +140,66 @@ def test_or_tautology_on_left_is_parenthesized():
     conn.close()
 
 
+# ---------------------------------------------------------------------------
+# 第九轮修复：teacher 院系过滤「首个字面量匹配即放行」导致的跨院越权
+#
+# 原 _inject_college 用 `_COLLEGE_RE.search()` 只检查**第一个**学院字面量：
+#   WHERE college="计算机学院" OR college="外国语学院"
+# 首字面量等于本院系 → 判定「已限定本院系」→ 原样 return sql，既不注入过滤
+# 也不检查后续是否含他院。实测执行后返回 20 行**全部外国语学院**学生的
+# student_id + name（越权泄露）。
+# 修复：findall 检查所有学院字面量，出现他院即拒绝；且始终注入括号包裹的过滤。
+# ---------------------------------------------------------------------------
+def test_teacher_or_cross_college_rejected():
+    """OR 拼接他院：必须拒绝（修复前原样放行，实测泄露他院学生）。"""
+    guard = PermissionGuard(role="teacher", current_user="T001", teacher_college="计算机学院")
+    r = guard.check(
+        'SELECT student_id, name, college FROM students '
+        'WHERE college="计算机学院" OR college="外国语学院"'
+    )
+    assert not r.allowed, f"OR 拼接他院应被拒绝，实际放行：{r.rewritten_sql}"
+
+
+def test_teacher_in_cross_college_filtered():
+    """IN(本院, 他院)：无 `=` 字面量匹配，走注入路径 → 结果须仅含本院系。"""
+    guard = PermissionGuard(role="teacher", current_user="T001", teacher_college="计算机学院")
+    r = guard.check(
+        'SELECT student_id, name, college FROM students '
+        'WHERE college IN ("计算机学院","外国语学院")'
+    )
+    if r.allowed:
+        # 必须注入括号包裹的院系过滤
+        assert "AND college = '计算机学院'" in r.rewritten_sql, r.rewritten_sql
+        assert "(" in r.rewritten_sql, r.rewritten_sql
+
+
+def test_teacher_or_cross_college_actually_filters_rows():
+    """端到端：用内存库执行改写后 SQL，确认返回行不越院。"""
+    guard = PermissionGuard(role="teacher", current_user="T001", teacher_college="计算机学院")
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE students (student_id TEXT, name TEXT, college TEXT)")
+    conn.executemany(
+        "INSERT INTO students VALUES (?,?,?)",
+        [("S001", "张三", "计算机学院"),
+         ("S002", "李四", "外国语学院"),
+         ("S003", "王五", "文学院")],
+    )
+    try:
+        for sql in (
+            "SELECT student_id, name, college FROM students",
+            'SELECT student_id, name, college FROM students WHERE college IN ("计算机学院","外国语学院")',
+            'SELECT student_id, name, college FROM students WHERE college NOT IN ("计算机学院")',
+        ):
+            r = guard.check(sql)
+            if not r.allowed:
+                continue
+            rows = conn.execute(r.rewritten_sql).fetchall()
+            for row in rows:
+                assert row[2] == "计算机学院", f"越院泄露: {row} ← {r.rewritten_sql}"
+    finally:
+        conn.close()
+
+
 def test_teacher_college_filter_is_parenthesized():
     """teacher 院系过滤注入同样需要括号，避免 OR 优先级逃逸。"""
     guard = PermissionGuard(role="teacher", teacher_college="计算机学院")

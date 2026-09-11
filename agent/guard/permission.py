@@ -324,12 +324,20 @@ class PermissionGuard:
         return tree.sql(dialect="sqlite")
 
     def _inject_college(self, sql: str, college: str) -> str | None:
-        """teacher 院系过滤：已含本院系则放行；含他院则拒绝；否则注入本院系。"""
-        m = _COLLEGE_RE.search(sql)
-        if m and m.group(1) != college:
-            return None  # 跨院查询拒绝
-        if m and m.group(1) == college:
-            return sql  # 已限定本院系
+        """teacher 院系过滤：含他院则拒绝；否则注入本院系。
+
+        第九轮修复（审计实测越权）：
+        原实现用 `_COLLEGE_RE.search()` 只看**第一个**学院字面量，若等于本院系
+        就 `return sql` 直接放行、不再注入过滤 —— 于是
+          `WHERE college="计算机学院" OR college="外国语学院"`
+        被判定为「已限定本院系」而原样放行，实测返回 20 行**全部外国语学院**学生。
+        正确做法：① 用 findall 检查**所有**学院字面量，只要有一个是外院就拒绝；
+        ② 无论如何都注入括号包裹的 AND college = 本院系（防 OR 优先级绕过，
+        与 _force_student_filter 同款处理）。
+        """
+        for other in _COLLEGE_RE.findall(sql):
+            if other != college:
+                return None  # 出现他院即拒绝（含 OR 拼接跨院）
         try:
             parsed = sqlglot.parse_one(sql, read="sqlite")
             cond = exp.EQ(this=exp.column("college"), expression=exp.Literal.string(college))
