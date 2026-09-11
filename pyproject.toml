@@ -15,6 +15,14 @@ dependencies = [
 # 可选：sqlglot 用于权限层 SQL 解析（未安装则回退为正则白名单解析）
 sqlparse = ["sqlglot>=25.0"]
 # 可选：RAGAS / DeepEval（官方点名的 RAG 评测工具，LLM-as-judge）
+#
+# ⚠️ 安全提示（依赖审计实测）：本组依赖当前存在未修复的已知漏洞。
+#    ragas 0.4.3 命中 SSRF（Multi-Modal Faithfulness 模块）；
+#    其传递依赖 diskcache 5.6.3 命中**不安全 pickle 反序列化**。
+#    截至审计时上游尚未发布修复版本。
+#    本项目**默认不使用**该组依赖 —— RAG 评测回退到确定性指标（召回@3 / 忠实度），
+#    零 Key 可跑且无该风险。仅在需要官方 RAGAS 分数时临时安装，
+#    并避免对不可信输入启用多模态忠实度评测。
 rag-eval = [
     "ragas>=0.2.0",
     "deepeval>=1.0.0",

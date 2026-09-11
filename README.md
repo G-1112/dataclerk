@@ -49,12 +49,28 @@ dataclerk/
 
 ```bash
 cd dataclerk
-pip install -e ".[dev]"      # 或 uv pip install -e ".[dev]"
-# 可选：sqlglot 用于权限层 SQL 解析（未装则回退正则解析）
-pip install -e ".[sqlparse]"
-# 可选：RAGAS / DeepEval（官方点名的 RAG 评测工具，LLM-as-judge）
-pip install -e ".[rag-eval]"
+
+# 方式 A：uv（推荐）—— uv.lock 已随仓库提交，可精确复现
+uv sync --extra dev            # 严格按 uv.lock 安装
+source .venv/bin/activate      # Windows: .venv\Scripts\activate
+
+# 方式 B：pip（不读 uv.lock，版本可能漂移）
+pip install -e ".[dev]"
 ```
+
+可选的额外能力（按需叠加到上面的命令）：
+
+```bash
+# sqlglot：权限层 SQL 解析（未装则回退正则白名单解析）
+uv sync --extra dev --extra sqlparse
+
+# RAGAS / DeepEval：官方点名的 RAG 评测工具（LLM-as-judge，需 LLM_API_KEY）
+uv sync --extra dev --extra rag-eval
+```
+
+> **关于 `uv.lock`**：仓库内提交了锁文件（默认依赖 150 个包，含精确版本与哈希）。
+> 用 `uv sync` 可保证依赖版本与作者环境一致；用 pip 安装则按 `>=` 约束解析，
+> **结果可能不同**。这也让 `pip-audit` 等依赖漏洞扫描有了确定的输入。
 
 > **0 Key 即可跑通**：不配置 LLM，智能体用确定性 mock SQL 生成器 + 关键词路由，
 > 测试套件（含变异测试）全流程可跑。
