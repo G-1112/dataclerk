@@ -39,6 +39,31 @@ def _grade(score: float) -> str:
     return "D"
 
 
+def _e(value) -> str:
+    """HTML 转义（第六轮安全修复）。
+
+    为什么必须转义：本报告由 f-string 拼接而成，其中 question / answer 等字段
+    来自**被测智能体的输出**，而智能体输出又会包含知识库（RAG）与数据库的内容。
+    实测完整链路：
+        投毒一条政策文档写入 <img src=x onerror=...>
+        → 该片段被检索进智能体回答
+        → 报告未转义地输出该回答
+        → 评委打开 report.html 时脚本执行
+    即「投毒知识库 → 报告存储型 XSS」。报告是提交物，评委一定会打开，故必须转义。
+
+    注意：同时转义引号，因为 case id 还会被拼进 HTML 属性
+    （data-cmd="..."），不转义可导致属性逃逸注入。
+    """
+    s = "" if value is None else str(value)
+    return (
+        s.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
+    )
+
+
 # 缺陷分类规则：维度 → (类别, 严重度, 修复建议)
 # 严重度定义：P0 = 安全越权/数据泄露；P1 = 功能错误/路由误判；P2 = 体验/一致性
 _DEFECT_RULES = {
@@ -79,14 +104,14 @@ def _defect_rows(failed: list[dict]) -> str:
         base_id = cid.split("-")[0] + "-" + cid.split("-")[1] if cid.count("-") >= 1 else cid
         cmd = _repro_command(base_id)
         rows.append(
-            f'<tr class="defect-row" data-sev="{d["severity"]}" data-dim="{d["dimension"]}">'
-            f'<td><span class="sev {sev_cls}">{d["severity"]}</span></td>'
-            f'<td>{cid}</td>'
-            f'<td>{d["label"]}</td>'
-            f'<td>{str(r.get("question",""))[:50]}</td>'
-            f'<td>{str(r.get("answer",""))[:70]}</td>'
-            f'<td class="muted">{d["advice"]}</td>'
-            f'<td><code class="cmd" title="点击复制" data-cmd="{cmd}">{cmd}</code></td>'
+            f'<tr class="defect-row" data-sev="{_e(d["severity"])}" data-dim="{_e(d["dimension"])}">'
+            f'<td><span class="sev {sev_cls}">{_e(d["severity"])}</span></td>'
+            f'<td>{_e(cid)}</td>'
+            f'<td>{_e(d["label"])}</td>'
+            f'<td>{_e(str(r.get("question",""))[:50])}</td>'
+            f'<td>{_e(str(r.get("answer",""))[:70])}</td>'
+            f'<td class="muted">{_e(d["advice"])}</td>'
+            f'<td><code class="cmd" title="点击复制" data-cmd="{_e(cmd)}">{_e(cmd)}</code></td>'
             f"</tr>"
         )
     return "".join(rows) or '<tr><td colspan="7">无失败用例</td></tr>'
@@ -109,7 +134,7 @@ def _dimension_pass_table(results: list[dict]) -> str:
         bar_w = int(rate * 100)
         color = "#16a34a" if rate >= 0.95 else ("#d97706" if rate >= 0.8 else "#dc2626")
         rows.append(
-            f"<tr><td>{label_map.get(dim, dim)}</td><td>{ok}/{total}</td><td>{rate:.1%}</td>"
+            f"<tr><td>{_e(label_map.get(dim, dim))}</td><td>{ok}/{total}</td><td>{rate:.1%}</td>"
             f'<td><div class="bar"><div class="bar-fill" style="width:{bar_w}%;background:{color}"></div></div></td></tr>'
         )
     return "".join(rows) or "<tr><td colspan='4'>无用例</td></tr>"
@@ -169,11 +194,11 @@ def _render_rag_eval(result: dict) -> str:
         status = item.get("status", "skipped")
         if status == "ok":
             scores = item.get("scores", {})
-            score_str = "、".join(f"{k} = {v}" for k, v in scores.items())
+            score_str = "、".join(f"{_e(k)} = {_e(v)}" for k, v in scores.items())
             rows.append(f"<tr><td>{label}</td><td>✅ 完成</td><td>{score_str}</td></tr>")
         else:
             reason = item.get("reason", "")
-            rows.append(f"<tr><td>{label}</td><td>⏭️ {status}</td><td class='muted'>{reason}</td></tr>")
+            rows.append(f"<tr><td>{label}</td><td>⏭️ {_e(status)}</td><td class='muted'>{_e(reason)}</td></tr>")
 
     avail = result.get("available", {})
     return (
@@ -219,8 +244,8 @@ def _comparison_section(prev_metrics: dict | None, metrics: dict) -> str:
             if d.get("lower_is_better"):
                 metric_name += "（越小越好）"
             rows.append(
-                f"<tr><td>{d['dimension']}</td><td>{metric_name}</td>"
-                f"<td>{d['prev']}</td><td>{d['cur']}</td>"
+                f"<tr><td>{_e(d['dimension'])}</td><td>{_e(metric_name)}</td>"
+                f"<td>{_e(d['prev'])}</td><td>{_e(d['cur'])}</td>"
                 f"<td>{d['delta']:+.4f}</td>"
                 f'<td><span class="sev {cls}">{mark}</span></td></tr>'
             )
@@ -300,7 +325,7 @@ def render_html(
 
     # 变异测试
     mut_rows = "".join(
-        f"<tr><td>{m['id']}</td><td>{m['name']}</td><td>{m['dimension']}</td>"
+        f"<tr><td>{_e(m['id'])}</td><td>{_e(m['name'])}</td><td>{_e(m['dimension'])}</td>"
         f"<td>{m['baseline_score']:.2%}</td><td>{m['mutant_score']:.2%}</td>"
         f"<td>{m['drop']:.2%}</td><td>{'✅ killed' if m['killed'] else '❌ survived'}</td></tr>"
         for m in mutation.get("mutants", [])
