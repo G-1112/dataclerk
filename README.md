@@ -33,7 +33,7 @@ dataclerk/
 │   ├── mutators/           # M1-M7 变异体注入器
 │   ├── run_suite.py        # 一键跑批 + 变异测试
 │   └── report/             # HTML 报告生成
-├── tests/                  # 单元测试（29 项）
+├── tests/                  # 单元测试（289 项：含 17 项 XSS 输出转义回归）
 └── docs/                   # 测试方案 / 缺陷分析报告 / 适配指南
 ```
 
@@ -85,7 +85,7 @@ python data/gen_db.py                                     # 全量（8000 学生
 ### 第 3 步：跑单元测试
 
 ```bash
-pytest -q          # 预期 29 passed
+pytest -q          # 预期 289 passed（含 17 项 XSS 输出转义回归 + 1 项 KMeans 缺陷修复回归）
 ```
 
 ### 第 4 步：跑全量测试套件 + 变异测试
