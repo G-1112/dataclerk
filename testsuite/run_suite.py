@@ -26,6 +26,7 @@ from . import metrics, rag_eval
 from .agent_client import AgentClient
 from .assert_result import result_hash
 from .cases import (
+    COLLEGES,
     MULTITURN,
     PERFORMANCE_QUESTIONS,
     STABILITY,
@@ -59,6 +60,9 @@ def run_functional(cases: list[dict], client: AgentClient) -> list[dict]:
         results.append({
             "id": c["id"], "dimension": "functional", "passed": match,
             "result_match": match, "sql_executable": executable, "tool_correct": tool_correct,
+            # 第九轮修复：结果必须携带 steps，否则 metrics.tool_calls 里
+            # len(r.get("trace", [])) 恒为 0 → 「平均步数」永远是 0.0，指标形同虚设。
+            "steps": len(r["trace"]),
             "question": c["question"], "answer": r["answer"][:80], "sql": r["sql"],
         })
     return results
@@ -171,6 +175,12 @@ def run_routing(cases: list[dict], client: AgentClient) -> list[dict]:
         correct = r["channel"] == c["expected_channel"]
         results.append({
             "id": c["id"], "dimension": "routing", "passed": correct, "route_correct": correct,
+            # 第九轮修复：路由选择本身就是「工具调用是否正确」（走 SQL 通道还是
+            # 政策检索通道）。原先该维度不含 tool_correct 字段，被 metrics.tool_calls
+            # 当作「工具选错」计入分母，导致官方维度「工具调用」的准确率
+            # 从 100% 被稀释成 18/(18+33)=35.29% —— 这是测量缺陷，不是真实缺陷。
+            "tool_correct": correct,
+            "steps": len(r.get("trace", [])),
             "question": c["question"], "expected_channel": c["expected_channel"], "actual_channel": r["channel"],
         })
     return results
@@ -206,15 +216,30 @@ def run_multiturn(cases: list[dict], client: AgentClient) -> list[dict]:
     results = []
     for c in cases:
         session = c["id"]
-        for turn in c["turns"]:
+        for idx, turn in enumerate(c["turns"]):
             r = client.run(turn["question"], role="admin", session_id=session)
             expected = turn.get("expect_college")
             sql = r.get("sql") or ""
             ok = expected in sql if expected else True
-            results.append({
+            row = {
                 "id": f"{c['id']}-{turn['question'][:8]}", "dimension": "multiturn", "passed": ok,
-                "resolve_ok": ok, "question": turn["question"], "sql": sql,
-            })
+                "question": turn["question"], "sql": sql,
+            }
+            # 第九轮修复：原实现只设 resolve_ok，keep_ok / misinherit 从未赋值，
+            # 导致报告里「约束保持率」恒为 0.0 —— 会被误读为「多轮约束完全失效」，
+            # 而实际指代消解准确率为 100%。这里把三者都真实测量：
+            #   resolve_ok  : 当前问句未显式提学院（需消解指代），SQL 是否带上正确的学院
+            #   keep_ok     : 第 3 轮及以后（长程依赖），约束是否仍保持
+            #   misinherit  : SQL 里出现了**别的**学院（约束被错误继承）
+            if expected:
+                mentions_explicit = expected in turn["question"]
+                if not mentions_explicit:
+                    row["resolve_ok"] = ok
+                if idx >= 2:
+                    row["keep_ok"] = ok
+                others = [c2 for c2 in COLLEGES if c2 != expected and c2 in sql]
+                row["misinherit"] = bool(others) and not ok
+            results.append(row)
     return results
 
 
