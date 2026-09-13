@@ -35,7 +35,21 @@ def _resolve_teacher_college(current_user: str) -> str | None:
 
 def execute_sql(sql: str, role: str = "admin", current_user: str = "") -> dict:
     """执行只读 SQL，返回 {ok, columns, rows, error, rewritten, truncated}。"""
-    teacher_college = _resolve_teacher_college(current_user) if role == "teacher" else None
+    if role == "teacher":
+        teacher_college = _resolve_teacher_college(current_user)
+        # 第十二轮修复（实证 P0）：原实现在院系解析失败（工号不存在 / DB 异常）
+        # 时以 teacher_college=None 继续构造 guard，院系过滤条件被整体跳过
+        # （fail-open），配合伪造工号即可全校漫游私有表。失败必须关闭（fail-close）。
+        if teacher_college is None:
+            return {
+                "ok": False,
+                "error": "无法确认教师所属院系，已按最小权限拒绝查询",
+                "columns": [],
+                "rows": [],
+                "truncated": False,
+            }
+    else:
+        teacher_college = None
     guard = PermissionGuard(role=role, current_user=current_user, teacher_college=teacher_college)
     result = guard.check(sql)
     if not result.allowed:

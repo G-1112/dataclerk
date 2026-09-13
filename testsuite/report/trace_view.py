@@ -19,9 +19,15 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 TRACE_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "traces"
+
+# 第十二轮修复（P2）：load_trace 的 trace_id 白名单。
+# 不用 agent/trace.py 的严格 hex 规则（本函数还被内部工具以任意标识调用，
+# 如测试里的 "x"/"y"），但同样阻断路径穿越：字符集不含 . / \ 等。
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 # 可疑步骤判定阈值
 SLOW_MS = 500
@@ -36,7 +42,14 @@ CHANNEL_TOOLS = {
 
 
 def load_trace(trace_id: str, trace_dir: str | Path | None = None) -> list[dict]:
-    """读取单个 trace 的步骤序列（按 step 升序）。"""
+    """读取单个 trace 的步骤序列（按 step 升序）。
+
+    第十二轮修复（P2）：trace_id 先过白名单校验（字符集不含 . / \，
+    与 agent/trace.py 的严格 hex 规则同属 fail-close），
+    否则 `--trace ../../x` 可读取 trace 目录外的任意 .jsonl（路径穿越）。
+    """
+    if not _SAFE_ID_RE.match(trace_id or ""):
+        return []
     d = Path(trace_dir or TRACE_DIR)
     path = d / f"{trace_id}.jsonl"
     if not path.exists():

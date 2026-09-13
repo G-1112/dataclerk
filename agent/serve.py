@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import os
 
 from fastapi import FastAPI, HTTPException, Request
@@ -23,10 +25,44 @@ class ChatRequest(BaseModel):
     role: str = "student"  # 默认最小权限；admin 仅服务端显式开启（见 _resolve_role）
     session_id: str = "default"
     user_id: str = ""  # student 角色下的当前学号
+    token: str = ""  # 开启 DATACLERK_AUTH_SECRET 后必带（HMAC 身份签名）
 
 
 class ResetRequest(BaseModel):
     session_id: str = "default"
+    user_id: str = ""  # 第十二轮新增：/reset 只清自己的槽位
+    token: str = ""
+
+
+def _auth_secret() -> str:
+    return os.getenv("DATACLERK_AUTH_SECRET", "")
+
+
+def expected_token(user_id: str, role: str, session_id: str, secret: str | None = None) -> str:
+    """身份签名 = HMAC-SHA256(secret, "user_id|role|session_id")。
+
+    供客户端/测试按同一算法计算 token（见 README「身份签名」一节）。
+    """
+    secret = _auth_secret() if secret is None else secret
+    return hmac.new(
+        secret.encode("utf-8"),
+        f"{user_id}|{role}|{session_id}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _verify_identity(user_id: str, role: str, session_id: str, token: str) -> None:
+    """第十二轮修复（实证 P0）：原实现直接信任请求体里的 user_id/role——
+
+    攻击者自称受害者即可读取其成绩/消费明细（`detect_foreign_student_id`
+    比较的两个值都来自客户端，自称即绕过）。修复：设置 DATACLERK_AUTH_SECRET 后，
+    user_id 必须配 HMAC 签名（服务端签发/分发，客户端无法伪造他人签名）。
+    未设置 secret 时为本地演示模式（信任模型已在 README 显式声明）。
+    """
+    if not _auth_secret():
+        return
+    if not user_id or not hmac.compare_digest(token or "", expected_token(user_id, role, session_id)):
+        raise HTTPException(status_code=401, detail="身份校验失败：缺少或错误的 token")
 
 
 def _resolve_role(requested: str) -> str:
@@ -66,6 +102,7 @@ async def chat(req: ChatRequest, request: Request) -> dict:
         )
 
     role = _resolve_role(req.role)
+    _verify_identity(req.user_id, role, req.session_id, req.token)
     # 异步执行，避免同步 LLM/DB 阻塞事件循环，支撑并发负载（性能维度）
     return await agent.achat(question, role=role, session_id=req.session_id, user_id=req.user_id)
 
@@ -77,7 +114,10 @@ async def trace(trace_id: str) -> dict:
 
 @app.post("/reset")
 async def reset(req: ResetRequest) -> dict:
-    agent.reset(req.session_id)
+    # 第十二轮修复：/reset 此前无鉴权且清整个会话（可清空他人记忆）。
+    # 现在只清 (session_id, user_id) 自己的槽位；开启签名鉴权后需带 token。
+    _verify_identity(req.user_id, "student", req.session_id, req.token)
+    agent.reset(req.session_id, req.user_id or None)
     return {"ok": True}
 
 
@@ -85,4 +125,8 @@ async def reset(req: ResetRequest) -> dict:
 async def health() -> dict:
     from . import llm
 
-    return {"status": "ok", "llm_enabled": llm.llm_enabled()}
+    return {
+        "status": "ok",
+        "llm_enabled": llm.llm_enabled(),
+        "auth_enabled": bool(_auth_secret()),
+    }

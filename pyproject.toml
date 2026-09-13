@@ -9,11 +9,16 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "pydantic>=2.9",
     "PyYAML>=6.0",
+    # 权限层 SQL 解析（行级过滤重写）——硬依赖，agent/guard/permission.py 顶层导入。
+    # 第十二轮修复：此前被错误声明为可选 extra（pyproject 注释称「未安装则回退
+    # 正则白名单解析」），但实际代码无回退路径：未安装时整个包无法 import，
+    # 按 README 主流程 `uv sync --extra dev` 复现会得到 8 个 collection error。
+    # 安全组件不应「可选」——回退到正则解析意味着行级过滤强度降级。
+    "sqlglot>=25.0",
 ]
 
 [project.optional-dependencies]
-# 可选：sqlglot 用于权限层 SQL 解析（未安装则回退为正则白名单解析）
-sqlparse = ["sqlglot>=25.0"]
+# （sqlparse extra 已并入主依赖，见上）
 # 可选：RAGAS / DeepEval（官方点名的 RAG 评测工具，LLM-as-judge）
 #
 # ⚠️ 安全提示（依赖审计实测）：本组依赖当前存在未修复的已知漏洞。

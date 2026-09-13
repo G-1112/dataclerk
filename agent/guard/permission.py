@@ -145,8 +145,14 @@ class PermissionGuard:
         if is_write(parsed if parsed is not None else sql):
             return PermissionResult(False, "拒绝写操作（仅允许 SELECT / WITH 只读查询）")
 
-        # 2) 未知表检测（用原始表名，避免被白名单过滤后漏报）
-        raw_tables = {t for t in _TABLE_RE.findall(sql)}
+        # 2) 未知表检测（基于 AST，排除 CTE 别名；解析失败回退正则）
+        #    第十二轮修复：原实现只用正则扫原始 SQL，会把 `WITH t AS (...) SELECT * FROM t`
+        #    的 CTE 名 t 当成未知表误杀（真实 LLM 经常生成 CTE）。
+        if parsed is not None:
+            cte_names = {c.alias for c in parsed.find_all(exp.CTE)}
+            raw_tables = {t.name for t in parsed.find_all(exp.Table)} - cte_names
+        else:
+            raw_tables = {t for t in _TABLE_RE.findall(sql)}
         unknown = raw_tables - ALL_TABLES
         if unknown:
             return PermissionResult(False, f"不存在的表：{', '.join(sorted(unknown))}")
@@ -187,6 +193,13 @@ class PermissionGuard:
         #       `SELECT name FROM students GROUP BY name`（GROUP 命中）泄露全部姓名；
         #       `SELECT MIN(name) FROM students` 可配合 WHERE name > 'x' 迭代枚举全校姓名。）
         if self.role == "student" and STUDENT_MASTER_TABLE in tables:
+            # 第十二轮修复（实证 P0）：原实现只对 parsed.find(exp.Select) 的
+            # **第一个** SELECT 分支做聚合/PII 校验，UNION 的其余分支完全不检查，于是
+            #   `SELECT COUNT(*) FROM students UNION SELECT name FROM students`
+            # 左侧聚合当"通行证"，右侧裸读全部姓名（实测返回全校姓名）。
+            # 与私有表同款策略：主表路径直接拒绝 UNION / 子查询（fail-close）。
+            if self._has_union_or_subquery(parsed if parsed is not None else sql):
+                return PermissionResult(False, "拒绝：学生主表查询不支持 UNION / 子查询")
             ok, why = self._student_master_allowed(parsed if parsed is not None else sql)
             if not ok:
                 return PermissionResult(False, why)
@@ -194,9 +207,15 @@ class PermissionGuard:
         # 8) teacher 角色：拒绝单生明细 + 本院系过滤
         if self.role == "teacher":
             if private:
-                m = _STUDENT_ID_RE.search(sql)
-                if m and m.group(1) != self.current_user:
-                    return PermissionResult(False, "教师不可查询单个学生的明细")
+                # 第十二轮修复（实证 P1）：原实现用正则 `student_id\s*=` 判定单生明细——
+                # 既防不住（`JOIN ... USING(student_id)`、`GROUP BY student_id`、
+                # `WHERE student_id IN (...)` 全部绕过），又误伤（JOIN ON 的
+                # `e.student_id = s.student_id` 被当成引用他人而整查拒绝）。
+                # 改为 AST 判定：任何 student_id 列出现在聚合函数之外（投影/WHERE/
+                # GROUP BY/HAVING/USING）即拒绝；SELECT * 一并拒绝。
+                ok, why = self._teacher_private_allowed(parsed)
+                if not ok:
+                    return PermissionResult(False, why)
                 # 私有表无 college 列，要求 SQL 已限定本院系（经 JOIN 等），否则拒绝
                 if self.teacher_college and not _COLLEGE_RE.search(sql):
                     return PermissionResult(False, "教师查询须限定本院系（college 条件缺失）")
@@ -256,6 +275,53 @@ class PermissionGuard:
         if not has_agg:
             return False, "学生查询学生主表须使用聚合函数（COUNT/AVG/SUM 等）"
         return True, ""
+
+    # ------------------------------------------------------------------
+    def _teacher_private_allowed(self, parsed: exp.Expression | None) -> tuple[bool, str]:
+        """teacher 访问学生私有表：只允许「不含 student_id 维度」的聚合查询。
+
+        判定规则（AST，替代原正则）：
+          - UNION / 子查询 → 拒绝（与私有表行级过滤同款 fail-close）；
+          - SELECT * → 拒绝（必然含 student_id 明细列）；
+          - student_id 列出现在任何聚合函数之外（投影 / WHERE / GROUP BY /
+            HAVING / JOIN USING）→ 拒绝（等价于按学生个人取数）；
+          - 允许：COUNT(student_id) 等聚合内部的 student_id 引用。
+
+        返回 (是否允许, 拒绝原因)。
+        """
+        if parsed is None:
+            return False, "无法解析查询，拒绝访问学生私有表"
+        if parsed.find(exp.Union) is not None or parsed.find(exp.Subquery) is not None:
+            return False, "教师查询学生私有表不支持 UNION / 子查询"
+        agg_types = self._node_types(_AGG_TYPES + _VALUE_LEAK_TYPES)
+        for select in parsed.find_all(exp.Select):
+            for projection in (select.expressions or []):
+                if isinstance(projection, exp.Star) or projection.find(exp.Star) is not None:
+                    return False, "教师查询学生私有表须使用聚合，禁止 SELECT *"
+                for col in projection.find_all(exp.Column):
+                    if col.name.lower() == "student_id" and not self._inside_agg(col, agg_types):
+                        return False, "教师不可查询单个学生的明细"
+            # WHERE / GROUP BY / HAVING 中出现 student_id 即「按个人取数」→ 拒绝。
+            # JOIN ON / USING 的 student_id 只是连接键、本身不泄露（泄露必然经由
+            # 投影或分组），刻意不扫描——否则正常院系 JOIN 聚合会被误杀（实证）。
+            for key in ("where", "group", "having"):
+                clause = select.args.get(key)
+                if clause is None:
+                    continue
+                for col in clause.find_all(exp.Column):
+                    if col.name.lower() == "student_id":
+                        return False, "教师不可查询单个学生的明细"
+        return True, ""
+
+    @staticmethod
+    def _inside_agg(col: exp.Column, agg_types: tuple[type[exp.Expression], ...]) -> bool:
+        """该列引用是否位于某个聚合函数内部（沿 parent 链向上找到 SELECT 为止）。"""
+        node = col.parent
+        while node is not None and not isinstance(node, exp.Select):
+            if agg_types and isinstance(node, agg_types):
+                return True
+            node = node.parent
+        return False
 
     # ------------------------------------------------------------------
     def _apply_student_filter(

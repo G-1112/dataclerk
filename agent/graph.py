@@ -42,16 +42,40 @@ class CampusAgent:
         self._slots: dict[str, Slots] = {}
         self.mutations: set[str] = set(mutations or [])
         self.max_steps = 8
+        # 槽位上限（第十二轮新增）：防长跑/压测下 _slots 无界增长（内存线性上涨）。
+        self._max_slot_keys = 1000
 
     # ------------------------------------------------------------------
-    def _slots_for(self, session_id: str) -> Slots:
-        if session_id not in self._slots:
-            max_memory = 2 if "M2" in self.mutations else 20
-            self._slots[session_id] = Slots(max_memory=max_memory)
-        return self._slots[session_id]
+    @staticmethod
+    def _slot_key(session_id: str, user_id: str) -> str:
+        """会话记忆按 (session_id, user_id) 隔离（第十二轮修复 P2）：
 
-    def reset(self, session_id: str) -> None:
-        self._slots.pop(session_id, None)
+        原实现仅以 session_id 为键，而 /chat 默认 session_id="default"——
+        用户 A 聊过的约束槽位会被同用默认会话的用户 B 继承（跨用户约束污染）。
+        """
+        return f"{session_id}|{user_id}"
+
+    def _slots_for(self, session_id: str, user_id: str = "") -> Slots:
+        key = self._slot_key(session_id, user_id)
+        if key not in self._slots:
+            if len(self._slots) >= self._max_slot_keys:
+                # dict 保持插入序：淘汰最久未用的键（简易 LRU）
+                self._slots.pop(next(iter(self._slots)))
+            max_memory = 2 if "M2" in self.mutations else 20
+            self._slots[key] = Slots(max_memory=max_memory)
+        else:
+            # 命中即提到最新（维持 LRU 语义）
+            self._slots[key] = self._slots.pop(key)
+        return self._slots[key]
+
+    def reset(self, session_id: str, user_id: str | None = None) -> None:
+        """重置会话记忆。user_id 为 None 时清空该会话全部用户的槽位（兼容旧行为）。"""
+        if user_id is None:
+            prefix = f"{session_id}|"
+            for key in [k for k in self._slots if k.startswith(prefix) or k == session_id]:
+                self._slots.pop(key, None)
+        else:
+            self._slots.pop(self._slot_key(session_id, user_id), None)
 
     async def achat(self, question: str, role: str = "student", session_id: str = "default", user_id: str = "") -> dict:
         """异步入口：把同步 chat 放到线程池执行，避免阻塞事件循环（性能维度）。"""
@@ -62,8 +86,10 @@ class CampusAgent:
         )
 
     # ------------------------------------------------------------------
-    def chat(self, question: str, role: str = "admin", session_id: str = "default", user_id: str = "") -> dict:
-        slots = self._slots_for(session_id)
+    def chat(self, question: str, role: str = "student", session_id: str = "default", user_id: str = "") -> dict:
+        # 第十二轮修复（实证 P0）：库级默认角色原为 admin（最高权限），
+        # 调用方忘传 role 即获全校数据访问。默认改为最小权限 student。
+        slots = self._slots_for(session_id, user_id)
         resolved = slots.resolve(question)
 
         # M7：破坏路由（总是走 SQL）
@@ -128,12 +154,19 @@ class CampusAgent:
 
         # M1：移除 get_schema 工具（跳过 schema 获取与取值检索）
         if "M1" not in self.mutations:
-            schema = get_schema()
-            self.tracer.record(trace_id, step, "需要先了解数据库表结构", "get_schema", {}, schema[:80])
-            step += 1
-            if "学院" in question:
-                vals = search_values("college", "", limit=20)
-                self.tracer.record(trace_id, step, "确认学院字段的实际取值", "search_values", {"column": "college"}, str(vals[:10]))
+            # 第十二轮修复（实证 P2）：工具异常此前会直接打穿 chat() → HTTP 500 /
+            # 跑批中断。统一隔离为优雅降级：记录 trace 后继续（schema 为空时
+            # 由 LLM/mock 尽力生成，执行层还有权限与错误兜底）。
+            try:
+                schema = get_schema()
+                self.tracer.record(trace_id, step, "需要先了解数据库表结构", "get_schema", {}, schema[:80])
+                step += 1
+                if "学院" in question:
+                    vals = search_values("college", "", limit=20)
+                    self.tracer.record(trace_id, step, "确认学院字段的实际取值", "search_values", {"column": "college"}, str(vals[:10]))
+                    step += 1
+            except Exception as e:  # noqa: BLE001
+                self.tracer.record(trace_id, step, "工具异常，降级继续", "tool_error", {}, f"{type(e).__name__}: {e}")
                 step += 1
 
         # 生成 SQL + 执行
@@ -146,14 +179,22 @@ class CampusAgent:
 
         # M3：移除权限过滤层（角色一律按 admin 执行）
         exec_role = "admin" if "M3" in self.mutations else role
-        result = execute_sql(sql, role=exec_role, current_user=user_id)
+        try:
+            result = execute_sql(sql, role=exec_role, current_user=user_id)
+        except Exception as e:  # noqa: BLE001
+            result = {"ok": False, "error": f"查询工具异常：{type(e).__name__}: {e}", "columns": [], "rows": [], "truncated": False}
         latency = int((time.time() - t0) * 1000)
         self.tracer.record(trace_id, step, "生成并执行 SQL 查询", "execute_sql", {"sql": sql}, _summarize(result), latency_ms=latency)
         return _format_sql_result(result)
 
     # ------------------------------------------------------------------
     def _rag_channel(self, question: str, trace_id: str, start_step: int = 1) -> str:
-        snippets = retrieve_policy(question, top_k=3)
+        try:
+            snippets = retrieve_policy(question, top_k=3)
+        except Exception as e:  # noqa: BLE001
+            # 第十二轮修复：检索工具异常同样优雅降级，不击穿整个请求
+            self.tracer.record(trace_id, start_step, "政策检索异常", "tool_error", {}, f"{type(e).__name__}: {e}")
+            return "政策检索暂时不可用，请稍后重试。"
 
         # M4：政策库投毒（混入错误条款）
         if "M4" in self.mutations:

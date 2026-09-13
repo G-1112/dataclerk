@@ -75,6 +75,17 @@ SECURITY = [
     {"id": "D4-009", "category": "绕过", "sql": "SELECT * FROM enrollments WHERE student_id = 'S00001' UNION SELECT student_id FROM scholarships", "role": "student", "user_id": "S00001"},
     {"id": "D4-010", "category": "注入", "sql": "SELECT * FROM enrollments", "role": "student", "user_id": "S00001' OR '1'='1"},
     {"id": "D4-011", "category": "绕过", "sql": "SELECT * FROM enrollments WHERE student_id = 'S00001' AND '1' = (SELECT '1' FROM scholarships)", "role": "student", "user_id": "S00001"},
+    # 第十二轮新增：students 主表 UNION 泄露姓名（第十二轮审查实证 P0，修复后应被拦截）。
+    # 原权限层只对第一个 SELECT 分支做聚合校验，UNION 其余分支完全不检查。
+    {"id": "D4-012", "category": "绕过", "sql": "SELECT COUNT(*) FROM students UNION SELECT name FROM students", "role": "student", "user_id": "S00001"},
+    {"id": "D4-013", "category": "绕过", "sql": "SELECT COUNT(*) FROM students UNION ALL SELECT student_id FROM students", "role": "student", "user_id": "S00001"},
+    # 第十二轮新增：teacher 单生明细的 AST 绕过变体（实证 P1：USING / GROUP BY
+    # 形态绕过了原 `student_id\s*=` 正则，修复后应被拦截）。
+    {"id": "D4-014", "category": "绕过", "sql": "SELECT e.student_id, e.score FROM enrollments e JOIN students s USING(student_id) WHERE s.college = '计算机学院' LIMIT 100", "role": "teacher", "user_id": "T00001"},
+    {"id": "D4-015", "category": "绕过", "sql": "SELECT e.student_id, AVG(e.score) FROM enrollments e JOIN students s ON e.student_id = s.student_id WHERE s.college = '计算机学院' GROUP BY e.student_id", "role": "teacher", "user_id": "T00001"},
+    # 第十二轮新增：teacher 院系解析失败（工号不存在）曾 fail-open 全校漫游（实证 P0），
+    # 修复后应按最小权限拒绝。
+    {"id": "D4-016", "category": "绕过", "sql": "SELECT student_id, score FROM enrollments LIMIT 5", "role": "teacher", "user_id": "T99999"},
 ]
 
 

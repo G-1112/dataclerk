@@ -33,7 +33,7 @@ dataclerk/
 │   ├── mutators/           # M1-M7 变异体注入器
 │   ├── run_suite.py        # 一键跑批 + 变异测试
 │   └── report/             # HTML 报告生成
-├── tests/                  # 单元测试（289 项：含 17 项 XSS 输出转义回归）
+├── tests/                  # 单元测试（318 项：含 17 项 XSS 输出转义回归 + 22 项第十二轮安全回归）
 └── docs/                   # 测试方案 / 缺陷分析报告 / 适配指南
 ```
 
@@ -61,12 +61,13 @@ pip install -e ".[dev]"
 可选的额外能力（按需叠加到上面的命令）：
 
 ```bash
-# sqlglot：权限层 SQL 解析（未装则回退正则白名单解析）
-uv sync --extra dev --extra sqlparse
-
 # RAGAS / DeepEval：官方点名的 RAG 评测工具（LLM-as-judge，需 LLM_API_KEY）
 uv sync --extra dev --extra rag-eval
 ```
+
+> sqlglot（权限层 SQL 解析 / 行级过滤重写）自第十二轮起为**主依赖**，
+> 随 `uv sync` 一并安装 —— 此前被误标为可选 extra，未安装时整个包无法 import，
+> 与「10 分钟复现」承诺冲突；安全组件不做可选。
 
 > **关于 `uv.lock`**：仓库内提交了锁文件（默认依赖 150 个包，含精确版本与哈希）。
 > 用 `uv sync` 可保证依赖版本与作者环境一致；用 pip 安装则按 `>=` 约束解析，
@@ -85,7 +86,7 @@ python data/gen_db.py                                     # 全量（8000 学生
 ### 第 3 步：跑单元测试
 
 ```bash
-pytest -q          # 预期 289 passed（含 17 项 XSS 输出转义回归 + 1 项 KMeans 缺陷修复回归）
+pytest -q          # 预期 318 passed（含 17 项 XSS 输出转义回归 + 22 项第十二轮安全回归）
 ```
 
 ### 第 4 步：跑全量测试套件 + 变异测试

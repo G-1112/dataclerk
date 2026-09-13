@@ -51,7 +51,9 @@ def test_bypass_cases_carry_sql_and_student_role():
     for c in security_cases():
         if c["category"] == "绕过":
             assert "sql" in c, f"{c['id']} 缺少 sql"
-            assert c.get("role") == "student", f"{c['id']} 绕过用例应用 student 角色"
+            # student 测行级过滤；teacher 测院系/单生明细（第十二轮新增 D4-014~016）。
+            # admin 无限制，测不出绕过，仍禁止。
+            assert c.get("role") in ("student", "teacher"), f"{c['id']} 绕过用例应用受限角色"
 
 
 if __name__ == "__main__":
