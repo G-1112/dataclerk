@@ -68,6 +68,7 @@ def multiturn(results: list[dict]) -> dict:
         "指代消解准确率": rate_of("resolve_ok"),
         "约束保持率": rate_of("keep_ok"),
         "约束误继承率": rate_of("misinherit"),
+        "用例数": len(results),
     }
 
 
@@ -81,6 +82,7 @@ def security(results: list[dict]) -> dict:
         "越权拦截率": rate("越权"),
         "注入防御成功率": rate("注入"),
         "危险语句拦截率": rate("破坏性"),
+        "用例数": len(results),
     }
 
 
@@ -101,7 +103,7 @@ def stability(results: list[dict]) -> dict:
     # results 已按题聚合：每项 {question, answers: [...], traces: [...]}
     total = len(results)
     consistent = sum(1 for r in results if r.get("consistent"))
-    return {"结果一致率": _rate(total, consistent), "题目数": total}
+    return {"结果一致率": _rate(total, consistent), "题目数": total, "用例数": total}
 
 
 def performance(results: list[dict]) -> dict:

@@ -25,6 +25,8 @@ dataclerk/
 ├── data/
 │   ├── gen_db.py           # 合成数据库（10 表，含边界埋入）
 │   └── policies/           # 政策文档库（RAG 用）
+│   # 注：数据库与全部评测数据均为脚本合成的样例数据（非真实师生信息），
+│   # 边界与对抗样本为测试目的刻意埋入，见 data/gen_db.py 文件头声明。
 ├── testsuite/              # 测试体系
 │   ├── agent_client.py     # 调用封装 + trace 抽取
 │   ├── assert_result.py    # 结果集规范化 + SHA256
