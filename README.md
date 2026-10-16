@@ -31,11 +31,12 @@ dataclerk/
 │   ├── agent_client.py     # 调用封装 + trace 抽取
 │   ├── assert_result.py    # 结果集规范化 + SHA256
 │   ├── metrics.py          # 指标计算
-│   ├── cases.py            # 用例集（d1-d7）
+│   ├── cases.py            # 用例集（307 条，d1-d7 + 路由/稳定性）
 │   ├── mutators/           # M1-M7 变异体注入器
 │   ├── run_suite.py        # 一键跑批 + 变异测试
+│   ├── verify_cases.py     # 用例入库前预检门（全量跑真实管线）
 │   └── report/             # HTML 报告生成
-├── tests/                  # 单元测试（318 项：含 17 项 XSS 输出转义回归 + 22 项第十二轮安全回归）
+├── tests/                  # 单元测试（333 项：含 17 项 XSS 输出转义回归 + 22 项第十二轮安全回归 + 扩容守卫）
 └── docs/                   # 测试方案 / 缺陷分析报告 / 适配指南
 ```
 
@@ -88,7 +89,7 @@ python data/gen_db.py                                     # 全量（8000 学生
 ### 第 3 步：跑单元测试
 
 ```bash
-pytest -q          # 预期 318 passed（含 17 项 XSS 输出转义回归 + 22 项第十二轮安全回归）
+pytest -q          # 预期 333 passed（含 17 项 XSS 输出转义回归 + 22 项第十二轮安全回归 + 扩容守卫）
 ```
 
 ### 第 4 步：跑全量测试套件 + 变异测试
@@ -96,8 +97,13 @@ pytest -q          # 预期 318 passed（含 17 项 XSS 输出转义回归 + 22 
 ```bash
 python -m testsuite.run_suite --db data/campus_small.db
 # 产出 data/report/metrics.json + data/report/report.html
-# 预期：Mutation Score = 7/7
+# 预期：307 条用例，Mutation Score = 7/7
 ```
+
+> 新增/修改用例后，先过预检门再跑全量（mock 模式下全量约 1 分钟）：
+> ```bash
+> python -m testsuite.verify_cases            # 全维度；--dim functional 可单跑
+> ```
 
 ### 第 5 步（可选）：起服务手动交互
 

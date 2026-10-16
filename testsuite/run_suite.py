@@ -496,6 +496,34 @@ def _load_prev_metrics(out_dir: Path) -> dict | None:
     return data.get("metrics") if isinstance(data, dict) else None
 
 
+def _db_fingerprint(db_path: str) -> dict:
+    """数据库内容指纹（SHA256 + 行数），用于「与上次对比」的同源校验。
+
+    第十三轮新增（2026-10-16）：原对比机制不看数据库——拿 campus.db 全量库
+    跑完再拿 campus_small.db 跑一次，「与上次对比」会把小库的延迟优势
+    算成「提升」、全量库的固有耗时算成「回归」，全是测量假象。
+    现在只有同一份数据库（内容哈希一致）才允许对比，否则明确跳过。
+    """
+    import hashlib
+
+    p = Path(db_path)
+    if not p.exists():
+        return {"path": str(p), "sha256": "", "rows": -1}
+    h = hashlib.sha256()
+    with p.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    try:
+        import sqlite3
+
+        con = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
+        rows = con.execute("SELECT COUNT(*) FROM enrollments").fetchone()[0]
+        con.close()
+    except Exception:  # noqa: BLE001
+        rows = -1
+    return {"path": str(p), "sha256": h.hexdigest()[:16], "rows": rows}
+
+
 def run_all(agent: CampusAgent, with_rag_eval: bool = True) -> dict:
     """跑全量用例，返回 {results, metrics}。"""
     client = AgentClient(agent)
@@ -613,11 +641,26 @@ def main() -> int:
 
     t0 = time.time()
     agent = CampusAgent(db_path=args.db) if args.db else CampusAgent()
+    db_fp = _db_fingerprint(agent.db_path)
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    # 与上一次跑批对比（第四轮）：在覆盖 metrics.json 之前先读取旧结果
-    prev_metrics = _load_prev_metrics(out_dir)
+    # 与上一次跑批对比（第四轮）：在覆盖 metrics.json 之前先读取旧结果。
+    # 第十三轮：仅当两次跑批用的是**同一份数据库**（内容 SHA256 一致）才对比，
+    # 跨库对比会把「库不同」误报成「指标提升/回归」（实测踩过：全量库 vs 小库）。
+    prev_full = None
+    prev_path = out_dir / "metrics.json"
+    if prev_path.exists():
+        try:
+            prev_full = json.loads(prev_path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            prev_full = None
+    prev_metrics = prev_full.get("metrics") if isinstance(prev_full, dict) else None
+    prev_db = prev_full.get("db") if isinstance(prev_full, dict) else None
+    same_db = bool(prev_metrics) and prev_db == db_fp
+    if prev_metrics and not same_db:
+        print(f"（上次跑批使用的数据库不同"
+              f"（{prev_db} → {db_fp['path']}），跳过指标对比）")
 
     suite = run_all(agent)
     mutation = mutation_testing(agent)
@@ -626,13 +669,18 @@ def main() -> int:
     # 也防两个进程互相把对方当成「上次基线」——第十二轮修复 P2）
     _atomic_write_text(
         out_dir / "metrics.json",
-        json.dumps({"metrics": suite["metrics"], "mutation": mutation}, ensure_ascii=False, indent=2),
+        json.dumps(
+            {"metrics": suite["metrics"], "mutation": mutation, "db": db_fp,
+             "cases_total": len(suite["results"])},
+            ensure_ascii=False, indent=2,
+        ),
     )
 
     # HTML 报告
     from .report.generate_report import render_html
 
-    html = render_html(suite["metrics"], mutation, suite["results"], prev_metrics)
+    html = render_html(suite["metrics"], mutation, suite["results"],
+                       prev_metrics if same_db else None)
     _atomic_write_text(out_dir / "report.html", html)
 
     elapsed = int(time.time() - t0)
@@ -643,8 +691,8 @@ def main() -> int:
         status = "killed ✓" if m["killed"] else "survived ✗"
         print(f"  {m['id']} {m['name']}: {status} (降幅 {m['drop']:.2f})")
 
-    # 与上次对比
-    if prev_metrics:
+    # 与上次对比（仅同库）
+    if same_db:
         deltas = metrics.compare_runs(prev_metrics, suite["metrics"])
         summary = metrics.regression_summary(deltas)
         print(f"与上次对比：提升 {summary['improvement_count']} 项，回归 {summary['regression_count']} 项")
@@ -652,13 +700,17 @@ def main() -> int:
             print(f"  ↓ 回归 {d['dimension']}.{d['metric']}: {d['prev']} → {d['cur']}")
         for d in summary["improvements"]:
             print(f"  ↑ 提升 {d['dimension']}.{d['metric']}: {d['prev']} → {d['cur']}")
+    elif prev_metrics:
+        pass  # 已在上面打印跳过原因
     else:
         print("（首次跑批，无历史指标可对比）")
 
     print(f"报告 → {out_dir}/report.html")
-    return 1 if prev_metrics and metrics.regression_summary(
-        metrics.compare_runs(prev_metrics, suite["metrics"])
-    )["has_regression"] else 0
+    has_regression = bool(
+        same_db
+        and metrics.regression_summary(metrics.compare_runs(prev_metrics, suite["metrics"]))["has_regression"]
+    )
+    return 1 if has_regression else 0
 
 
 if __name__ == "__main__":

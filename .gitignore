@@ -23,3 +23,6 @@ data/uploads/
 Thumbs.db
 .idea/
 .vscode/
+
+# testsuite/verify_cases.py 的验证用 trace 输出（工具产物，不入库）
+data/traces_verify/
