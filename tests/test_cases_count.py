@@ -84,5 +84,28 @@ def test_bypass_cases_carry_sql_and_student_role():
             assert c.get("role") in ("student", "teacher"), f"{c['id']} 绕过用例应用受限角色"
 
 
+def test_case_ids_are_unique_across_all_dimensions():
+    """所有维度的用例 ID 必须全局唯一（2026-10-28 新增守卫）。
+
+    动因（实测发现的真缺陷）：越权扩展用例的 ID 原为 `D4-1{i}-{sid}`，
+    未带上「数据类型」序号，导致同一学号的 4 个**不同问题**
+    （成绩 / 消费 / 借阅 / 奖学金）共用 1 个 ID。
+    后果不是"用例变少"，而是更隐蔽：报告里出现多行同 ID，
+    任何按 ID 去重、按 ID 回查 trace 的逻辑都会**静默丢掉**其中几条，
+    而总数看起来仍是 307。ID 唯一性是"用例可追溯"的前提，必须固化为断言。
+    """
+    ids = [c["id"] for c in functional_cases()]
+    ids += [c["id"] for c in security_cases()]
+    ids += [c["id"] for c in routing_cases()]
+    ids += [c["id"] for c in rag_cases()]
+    ids += [c["id"] for c in boundary_cases()]
+    ids += [c["id"] for c in STABILITY]
+    for c in MULTITURN:
+        ids += [f"{c['id']}-{i}" for i in range(len(c["turns"]))]
+
+    dup = sorted({i for i in ids if ids.count(i) > 1})
+    assert not dup, f"用例 ID 存在重复（会导致去重时静默丢用例）：{dup[:5]}"
+
+
 if __name__ == "__main__":
     raise SystemExit(__import__("pytest").main([__file__, "-q"]))
