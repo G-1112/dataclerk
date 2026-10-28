@@ -10,12 +10,21 @@ def _rate(total: int, passed: int) -> float:
 
 
 def functional(results: list[dict]) -> dict:
-    """功能准确性：执行准确率（结果集一致）+ SQL 可执行率。"""
+    """功能准确性：执行准确率（结果集严格一致）+ SQL 可执行率。
+
+    第十四轮新增 `语义等价准确率`：严格比对之外，按「数值容差 / 列对齐 / 集合语义」
+    再判一次，用来量化"有多条用例其实写对了、只是写法不同"。
+    **主指标仍是严格口径**，语义口径只做补充说明，两者都进报告。
+    """
     total = len(results)
     acc = sum(1 for r in results if r.get("result_match"))
     executable = sum(1 for r in results if r.get("sql_executable"))
+    semantic = sum(1 for r in results if r.get("equivalent_semantic"))
+    rescued = [r for r in results if r.get("equivalent_semantic") and not r.get("result_match")]
     return {
         "执行准确率": _rate(total, acc),
+        "语义等价准确率": _rate(total, semantic),
+        "严格判错但语义等价": len(rescued),
         "SQL可执行率": _rate(total, executable),
         "用例数": total,
     }

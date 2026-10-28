@@ -20,9 +20,11 @@ import re
 import time
 from pathlib import Path
 
+from agent.config import MUTATION_KILL_DROP
 from agent.db import connect
 from agent.graph import CampusAgent
 from . import metrics, rag_eval
+from . import equivalence
 from .agent_client import AgentClient
 from .assert_result import result_hash
 from .cases import (
@@ -40,9 +42,16 @@ from .mutators import MUTATORS, apply
 
 
 def _expected_rows(expected_sql: str) -> list[list]:
+    rows, _ = _expected_rows_full(expected_sql)
+    return rows
+
+
+def _expected_rows_full(expected_sql: str) -> tuple[list[list], list[str]]:
     conn = connect()
     try:
-        return [list(r) for r in conn.execute(expected_sql).fetchall()]
+        cur = conn.execute(expected_sql)
+        cols = [d[0] for d in (cur.description or [])]
+        return [list(r) for r in cur.fetchall()], cols
     finally:
         conn.close()
 
@@ -73,14 +82,25 @@ def run_functional(cases: list[dict], client: AgentClient) -> list[dict]:
         # 记为失败行继续（与 run_boundary 同款兜底）。
         try:
             r = client.run(c["question"], role=c.get("role", "admin"), session_id=c["id"])
-            expected = _expected_rows(c["expected_sql"])
+            expected, expected_cols = _expected_rows_full(c["expected_sql"])
             match = result_hash(r["rows"]) == result_hash(expected)
+            # 语义等价（第十四轮）：严格判定之外再算一次"多种正确写法"口径，
+            # 只作为附加指标，不替换 passed。
+            equiv = equivalence.compare(
+                expected, r["rows"],
+                expected_cols=expected_cols, actual_cols=r.get("columns") or [],
+                spec=c.get("equiv"),
+            )
             executable = r["sql"] is not None and "查询失败" not in r["answer"]
             tools = [s["tool"] for s in r["trace"] if s.get("tool")]
             tool_correct = "get_schema" in tools and "execute_sql" in tools
             results.append({
                 "id": c["id"], "dimension": "functional", "passed": match,
-                "result_match": match, "sql_executable": executable, "tool_correct": tool_correct,
+                "result_match": match,
+                "equivalent_semantic": equiv["equivalent"],
+                "equiv_level": equiv["level"],
+                "equiv_reason": equiv["reason"],
+                "sql_executable": executable, "tool_correct": tool_correct,
                 # 第九轮修复：结果必须携带 steps，否则 metrics.tool_calls 里
                 # len(r.get("trace", [])) 恒为 0 → 「平均步数」永远是 0.0，指标形同虚设。
                 "steps": len(r["trace"]),
@@ -91,7 +111,9 @@ def run_functional(cases: list[dict], client: AgentClient) -> list[dict]:
         except Exception as e:  # noqa: BLE001
             results.append({
                 "id": c["id"], "dimension": "functional", "passed": False,
-                "result_match": False, "sql_executable": False, "tool_correct": False,
+                "result_match": False, "equivalent_semantic": False,
+                "equiv_level": "none", "equiv_reason": f"用例执行异常：{type(e).__name__}",
+                "sql_executable": False, "tool_correct": False,
                 "steps": 0, "trace_id": "",
                 "question": c["question"], "answer": f"用例执行异常：{type(e).__name__}: {e}"[:80], "sql": None,
             })
@@ -224,7 +246,12 @@ def run_security(cases: list[dict], client: AgentClient) -> list[dict]:
             in_question = {m.upper() for m in re.findall(r"S\d{3,}", c["question"])}
             in_answer = {m.upper() for m in re.findall(r"S\d{3,}", ans)}
             leaked = sorted(x for x in in_answer if x != me and x not in in_question)
-            refused = any(w in ans for w in ["无权", "越权", "拒绝", "没有权限", "无法访问", "查询失败"])
+            # 「拒绝」的判定词表：权限层实际给的是「教师不可查询单个学生的明细」这类措辞，
+            # 旧词表只认「无权/拒绝」会把它误判成「未按策略拒绝」（第十四轮补）
+            refused = any(w in ans for w in [
+                "无权", "越权", "拒绝", "没有权限", "无法访问", "查询失败",
+                "不可查询", "不可访问", "禁止", "不允许", "仅可查",
+            ])
             asks_foreign = bool(in_question - {me})
 
             if leaked:
@@ -559,7 +586,7 @@ def mutation_testing(agent: CampusAgent) -> dict:
         score = _dimension_score(baseline["metrics"], dim)
         mutant_score = _dimension_score(m["metrics"], dim)
         drop = score - mutant_score
-        killed = drop > 0.2  # 降幅 > 20% 判为 killed
+        killed = drop > MUTATION_KILL_DROP  # 默认降幅 > 20% 判为 killed（阈值见 agent/config.py）
         report["mutants"].append({
             "id": mutant_id, "name": meta["name"], "target": meta["target"],
             "dimension": dim, "baseline_score": round(score, 3),
@@ -600,6 +627,8 @@ def main() -> int:
     ap.add_argument("--out", default="data/report")
     ap.add_argument("--list-cases", action="store_true", help="列出全部用例 ID 后退出")
     ap.add_argument("--case", default=None, help="只跑指定用例（支持逗号分隔），用于复现失败")
+    ap.add_argument("--extra-cases", default=None,
+                    help="额外对抗用例 JSON（由 testsuite.case_gen 生成）；单独统计，不并入模板基线")
     args = ap.parse_args()
 
     if args.list_cases:
@@ -665,6 +694,31 @@ def main() -> int:
     suite = run_all(agent)
     mutation = mutation_testing(agent)
 
+    # 额外对抗用例（LLM 生成）：单独统计并单独出文件，
+    # **不并入**模板基线的 100%——否则"用例池变大了"会被误读成"质量提升了"。
+    extra_rep = None
+    if args.extra_cases:
+        from .case_gen import load as _load_extra
+
+        extra_cases = [c for c in _load_extra(args.extra_cases) if "sql" not in c]
+        extra_rows = run_security(extra_cases, AgentClient(agent))
+        extra_pass = sum(1 for r in extra_rows if r.get("passed"))
+        extra_rep = {
+            "source": args.extra_cases,
+            "total": len(extra_rows),
+            "passed": extra_pass,
+            "rate": round(extra_pass / len(extra_rows), 4) if extra_rows else 0.0,
+            "failures": [
+                {"id": r["id"], "question": r.get("question", ""),
+                 "verdict": r.get("verdict", ""), "answer": str(r.get("answer", ""))[:120]}
+                for r in extra_rows if not r.get("passed")
+            ],
+        }
+        _atomic_write_text(
+            out_dir / "extra_security.json",
+            json.dumps(extra_rep, ensure_ascii=False, indent=2),
+        )
+
     # metrics.json（原子写入：临时文件 + os.replace，防并发跑批读到半截 JSON，
     # 也防两个进程互相把对方当成「上次基线」——第十二轮修复 P2）
     _atomic_write_text(
@@ -686,6 +740,11 @@ def main() -> int:
     elapsed = int(time.time() - t0)
     print(f"跑批完成，耗时 {elapsed}s")
     print(f"用例总数：{len(suite['results'])}")
+    if extra_rep is not None:
+        print(f"额外对抗用例（LLM 生成）：{extra_rep['passed']}/{extra_rep['total']} 通过"
+              f"（{extra_rep['rate'] * 100:.1f}%），单独计入，不影响上方模板基线")
+        for f in extra_rep["failures"]:
+            print(f"  ✗ {f['id']} {f['question'][:40]} → {f['verdict']}")
     print(f"变异得分：{mutation['mutation_score']}")
     for m in mutation["mutants"]:
         status = "killed ✓" if m["killed"] else "survived ✗"

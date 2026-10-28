@@ -137,10 +137,18 @@ def run_deepeval_eval(samples: list[dict]) -> dict:
 # 统一入口
 # ---------------------------------------------------------------------------
 def run_all(samples: list[dict]) -> dict:
-    """一次性跑 RAGAS + DeepEval，返回汇总。"""
+    """一次性跑 RAGAS + DeepEval + 自研判官，返回汇总。
+
+    `llm_judge` 是 2026-10-28 新增的**无依赖替代**：RAGAS/DeepEval 因供应链风险
+    默认不装，改用同判据的自研 LLM-as-judge，保证「AI 能力应用」维度不留 skipped。
+    三者口径一致、互相印证；任一不可用时都只影响自己那一项。
+    """
+    from . import rag_judge
+
     return {
         "ragas": run_ragas_eval(samples),
         "deepeval": run_deepeval_eval(samples),
+        "llm_judge": rag_judge.run(samples),
         "available": {"ragas": ragas_available(), "deepeval": deepeval_available(), "llm": llm.llm_enabled()},
     }
 

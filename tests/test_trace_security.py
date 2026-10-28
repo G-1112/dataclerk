@@ -12,6 +12,7 @@ uuid4().hex[:12]），并在拼接后再用 resolve()+relative_to 做一次目�
 
 from __future__ import annotations
 
+import contextlib
 import json
 from pathlib import Path
 
@@ -29,14 +30,23 @@ def client() -> TestClient:
 
 @pytest.fixture()
 def outside_file():
-    """在 traces 目录之外放一个探针 .jsonl。"""
+    """在 traces 目录之外放一个探针 .jsonl。
+
+    位置必须固定在 `TRACE_DIR/../TRAVERSAL_PROBE.jsonl`：被测的穿越载荷就是
+    `..\\TRAVERSAL_PROBE`，路径一变测试就失去意义。
+
+    清理用 `contextlib.suppress` 兜底：本机沙箱对 `unlink` 做了 safe-delete 拦截
+    （走回收站），两个进程同时清理同一个探针文件时会抛 OSError，导致 teardown 报错
+    ——那是环境行为，不是被测代码的问题。探针下一次写入会被覆盖，残留无害。
+    """
     probe = Path(TRACE_DIR).parent / "TRAVERSAL_PROBE.jsonl"
     probe.write_text(
         json.dumps({"leak": "目录外内容", "token": "sk-DEMO"}, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
     yield probe
-    probe.unlink(missing_ok=True)
+    with contextlib.suppress(OSError):
+        probe.unlink(missing_ok=True)
 
 
 # ------------------------------------------------------------ trace_id 校验

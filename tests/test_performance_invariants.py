@@ -220,8 +220,16 @@ def test_tracer_record_does_not_resolve_per_call(monkeypatch):
     (t.dir / f"{tid}.jsonl").unlink(missing_ok=True)
 
 
-def test_trace_write_is_reasonably_fast():
+def test_trace_write_is_reasonably_fast(tmp_path):
     """单条 trace 写入不应显著慢于同目录下的裸文件写入。
+
+    2026-10-28 修复第二个 flaky 源（去掉混淆变量，判定口径未变）：
+    原实现用默认 trace 目录 `data/traces/`，而该目录在反复跑批后会累积上万条
+    jsonl（本次实测 11,710 文件 / 9.6MB）。在这么大的 NTFS 目录里做 open/close，
+    目录索引抖动会随机打到「trace 一侧」或「参照一侧」，导致同一份代码时而通过、
+    时而报「疑似回归」——测到的其实是**仓库脏乱程度**，不是 tracer 的开销。
+    改为在 `tmp_path` 里各写 50 条做同口径对比：只回答「tracer 相对裸写有没有
+    数量级劣化」这个原本要问的问题。阈值逻辑（max(5ms, 参照×5)）一行未改。
 
     2026-10-16 修复 flaky：原实现用绝对阈值 5ms。同日实测单条写入
     1.2 / 7.1 / 8.4 / 9.4 / 10.9 / 12.2 / 45.7 / 61.2ms——全部是环境
@@ -239,7 +247,7 @@ def test_trace_write_is_reasonably_fast():
 
     from agent.trace import Tracer
 
-    t = Tracer()
+    t = Tracer(trace_dir=str(tmp_path))
     tid = t.start()
     t.record(tid, 1, "warm", "tool", {}, "obs")  # 预热
     n = 50

@@ -334,6 +334,31 @@ def render_html(
     # RAGAS / DeepEval 专项
     rag_eval_html = _render_rag_eval(metrics.get("rag_eval", {}))
 
+    # 功能准确性双口径（第十四轮）：严格口径是主指标，语义等价只做补充说明。
+    # 只在实际跑出该字段时才渲染，避免旧版 metrics.json 缺字段时报告出现空白行。
+    dual_html = ""
+    fm = metrics.get("functional", {})
+    if "语义等价准确率" in fm:
+        rescued = fm.get("严格判错但语义等价", 0)
+        dual_html = (
+            '<div class="card"><h2>功能准确性 · 双口径（严格为主，语义等价为辅）</h2>'
+            '<table><tr><th>口径</th><th>实测</th><th>含义</th></tr>'
+            f'<tr><td>严格（结果集逐字节一致）</td><td><b>{fm.get("执行准确率", 0):.2%}</b></td>'
+            '<td>行序无关的多重集精确比对，主指标</td></tr>'
+            f'<tr><td>语义等价（数值容差 / 列对齐 / 集合语义）</td><td>{fm.get("语义等价准确率", 0):.2%}</td>'
+            '<td>允许"同样对、写法不同"，仅作补充</td></tr>'
+            f'<tr><td>严格判错但语义等价</td><td>{rescued} 条</td>'
+            '<td>若为 0，说明失败不是"写法不同"造成的</td></tr>'
+            f'<tr><td>SQL 可执行率</td><td>{fm.get("SQL可执行率", 0):.2%}</td>'
+            '<td>生成的 SQL 能否跑通（区分"写错"与"没写"）</td></tr>'
+            '</table>'
+            '<p class="muted">默认只放开数值容差；"多选列/重复行/少几行"必须由用例显式声明 '
+            '`equiv` 才放宽，且<b>不允许默认放行"少列"</b>——按学院统计却丢了学院名，行就不可判读。'
+            '两个数都摆出来，谁也不能替谁说话。<br>'
+            '命令：<code>python -m testsuite.run_suite</code>（严格口径不变，语义口径见 metrics.json 的 '
+            '<code>functional.语义等价准确率</code>）。</p></div>'
+        )
+
     return f"""<!doctype html>
 <html lang="zh"><head><meta charset="utf-8"><title>问数官 · 测试报告</title>
 <style>
@@ -384,6 +409,8 @@ code.cmd.copied::after{{content:" ✓ 已复制";color:#16a34a;font-weight:700}}
 <div class="card"><h2>七维度明细</h2>
 <table><tr><th>维度</th><th>核心指标</th><th>实测值</th><th>目标值</th><th>状态</th></tr>
 {"".join(dim_rows)}</table></div>
+
+{dual_html}
 
 {rag_eval_html}
 
