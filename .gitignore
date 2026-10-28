@@ -11,6 +11,7 @@ env/
 # 环境变量（含 API Key，严禁提交）
 .env
 .env.local
+.env.llm
 
 # 生成产物
 data/*.db
@@ -26,3 +27,9 @@ Thumbs.db
 
 # testsuite/verify_cases.py 的验证用 trace 输出（工具产物，不入库）
 data/traces_verify/
+
+# 目录穿越探针（tests/test_trace_security.py 生成；沙箱 trash 失败时可能残留）
+data/TRAVERSAL_PROBE.jsonl
+
+# 跨模型矩阵的本地配置（含各家 key 的环境变量名，各人不同，不入库）
+models.json
