@@ -97,15 +97,31 @@ def route_question(
 ) -> dict:
     """返回 {channel, reason}。
 
-    在常规路由之前先做**越权前置拦截**：学生显式索取他人数据一律拒绝，
-    不再进入 clarify / sql / rag。教师与管理员不受此限（其查询他人数据属正常业务）。
+    在常规路由之前先做**越权前置拦截**：显式索取他人学号数据一律拒绝，
+    不再进入 clarify / sql / rag。
+
+    角色口径（第十四轮修正，由 LLM 生成用例发现）：
+    - student：只能查自己 → 他人学号一律 deny；
+    - teacher：**可查本院系聚合数据，不可查单个学生明细**（`agent/guard/permission.py`
+      已按此实现：`execute_sql` 对 teacher + `student_id=他人` 返回
+      「教师不可查询单个学生的明细」）。
+      但路由层此前对 teacher 一律放行，于是「教师索取某生成绩 + 奖学金评定」这类
+      混合了政策关键词的问题会被判成 rag，最后答一段政策文本——既没拒绝也没数据，
+      用户拿到答非所问的结果。现改为在路由层就与权限层口径对齐；
+    - admin：不受此限（仅服务端显式开启时使用）。
     """
     q = question or ""
 
-    # 0) 越权前置拦截（仅学生角色）
-    if role == "student" and current_user:
+    # 0) 越权前置拦截（student：禁查他人；teacher：禁查单生明细）
+    if role in ("student", "teacher") and current_user:
         foreign = detect_foreign_student_id(q, current_user)
         if foreign:
+            if role == "teacher":
+                return {
+                    "channel": "deny",
+                    "reason": f"越权：教师不可查询单个学生（{foreign[0]}）的明细，仅可查本院系聚合数据",
+                    "foreign_ids": foreign,
+                }
             return {
                 "channel": "deny",
                 "reason": f"越权：无权访问其他学生（{foreign[0]}）的数据",

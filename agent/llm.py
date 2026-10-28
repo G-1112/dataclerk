@@ -16,7 +16,21 @@ import re
 # ---------------------------------------------------------------------------
 _SQL_SYSTEM = """你是校园数据智能体的 SQL 生成器。根据表结构和用户问题生成一条只读 SQLite 查询。
 只输出 SQL 语句本身，不要输出解释、不要加代码块标记。
-若问题涉及政策、规定、流程等非结构化内容，或无法用 SQL 回答，输出空字符串。"""
+若问题涉及政策、规定、流程等非结构化内容，或无法用 SQL 回答，输出空字符串。
+
+额外约束（以下为通用规则，务必遵守）：
+1. 涉及「某学院/某专业的学生」的统计（人数、平均绩点、成绩、选课等）时，必须以 students
+   表为口径，或用 enrollments JOIN students ON student_id，按 students.college 过滤；
+   不要用 courses.college（那是开课学院，口径不同）。
+2. 只 SELECT 用户明确问到的列，禁止 SELECT * 或多带无关列。
+   例如问「有哪些课程」只取 course_name；问「有多少学生」只取 COUNT(*)。
+3. semester 列是「年份-季节」大写枚举：'2023-FALL'、'2024-SPRING'、'2024-FALL'、'2025-SPRING'。
+   遇到「2024年春季」要转成 '2024-SPRING'，遇到「2024年秋季」转成 '2024-FALL'；
+   不要写成 '2023-2024-2'、'2024秋季'、'spring 2024' 等其他形式。
+4. grade 列是整数年份（如 2024），过滤时不要加引号。
+5. enrollments.status 是选课状态：'completed'（已结课，有成绩）、'enrolled'（在修，无成绩）、
+   'withdrawn'（已退课）。**凡统计「成绩/分数/绩点」（平均、最高、最低），只计入
+   status = 'completed' 的记录**；退课与在修记录不计入成绩统计。"""
 
 _ANSWER_SYSTEM = """你是校园智能助手。根据检索到的政策片段回答用户问题，只依据片段内容作答，
 引用片段要点，不要编造。片段不足时如实说明"未找到相关政策"。"""
@@ -146,7 +160,8 @@ class MockSqlGenerator:
     # ---- 模板 ----
     def _avg_score(self, college: str | None, semester: str | None) -> str:
         sql = "SELECT AVG(e.score) FROM enrollments e JOIN students s ON e.student_id = s.student_id"
-        conds = []
+        # 成绩统计只算已结课记录（enrolled 无成绩、withdrawn 退课不计）
+        conds = ["e.status = 'completed'"]
         if college:
             conds.append(f"s.college = '{college}'")
         if semester:
@@ -157,7 +172,7 @@ class MockSqlGenerator:
 
     def _maxmin_score(self, college: str | None, semester: str | None, fn: str) -> str:
         sql = f"SELECT {fn}(e.score) FROM enrollments e JOIN students s ON e.student_id = s.student_id"
-        conds = []
+        conds = ["e.status = 'completed'"]
         if college:
             conds.append(f"s.college = '{college}'")
         if semester:
@@ -203,7 +218,11 @@ class MockSqlGenerator:
         if sid:
             return f"SELECT name, amount FROM scholarships WHERE student_id = '{sid}'"
         if college:
-            return f"SELECT COUNT(*) FROM scholarships sh JOIN students s ON sh.student_id = s.student_id WHERE s.college = '{college}'"
+            # 「有多少种」问的是项目种类 → 必须 DISTINCT；COUNT(*) 会答成人次。
+            # 第十五轮由评测基准修正反向同步到这里（基准与实现口径必须一致）。
+            return (f"SELECT COUNT(DISTINCT sh.name) FROM scholarships sh "
+                    f"JOIN students s ON sh.student_id = s.student_id "
+                    f"WHERE s.college = '{college}'")
         return "SELECT name, COUNT(*) FROM scholarships GROUP BY name"
 
     def _borrows(self, sid: str | None) -> str:
@@ -222,9 +241,16 @@ class MockSqlGenerator:
         return "SELECT name, title FROM teachers"
 
     def _group_by_college(self, q: str) -> str:
+        # 第十六轮：分组统计补 ORDER BY。缺省顺序在 SQLite 里是"未定义"的，
+        # 同一库两次执行可能给出不同行序 → 稳定性维度会偶发假红（实测踩过 1 次）。
+        # 另外「排名」类问题本就该排序，排序也是更符合用户预期的回答。
         if re.search(r"成绩|绩点", q):
-            return "SELECT s.college, AVG(e.score) FROM enrollments e JOIN students s ON e.student_id = s.student_id GROUP BY s.college"
-        return "SELECT college, COUNT(*) FROM students GROUP BY college"
+            return ("SELECT s.college, AVG(e.score) FROM enrollments e "
+                    "JOIN students s ON e.student_id = s.student_id "
+                    "WHERE e.status = 'completed' GROUP BY s.college "
+                    "ORDER BY 2 DESC, 1")
+        return ("SELECT college, COUNT(*) FROM students GROUP BY college "
+                "ORDER BY 2 DESC, 1")
 
 
 mock_sql = MockSqlGenerator()
@@ -238,6 +264,17 @@ _llm = LlmClient()
 
 def llm_enabled() -> bool:
     return _llm.enabled
+
+
+def judge_complete(system: str, user: str) -> str:
+    """通用补全入口（供评测器做 LLM-as-judge 用）；未配置 Key 返回空串。
+
+    单独开这个口子而不是让评测器直接访问 `_llm`：评测逻辑属于测试侧，
+    不应依赖被测模块的私有对象。
+    """
+    if not _llm.enabled:
+        return ""
+    return _llm.complete(system, user, temperature=0.0)
 
 
 def generate_sql(question: str, schema_desc: str, role: str = "admin", current_user: str = "") -> str:

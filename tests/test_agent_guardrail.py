@@ -61,9 +61,31 @@ def test_route_allows_student_asking_self():
     assert r["channel"] != "deny"
 
 
-def test_route_allows_teacher_querying_student():
-    """教师查询学生数据属正常业务，不得拦截。"""
+def test_route_denies_teacher_single_student_detail():
+    """教师查单个学生明细：路由层口径必须与权限层一致（第十四轮修正）。
+
+    历史：本用例原先断言「教师查询学生数据属正常业务，不得拦截」。
+    但 `agent/guard/permission.py` 的实现与文档口径是
+    「teacher：可查本院系聚合数据，**不可查单生明细**」，
+    `execute_sql` 对 teacher + 他人 student_id 实测返回
+    `教师不可查询单个学生的明细`。也就是说旧断言与真实策略相反。
+    由 LLM 生成的外部用例（教师索取某生成绩+奖学金）暴露出这个矛盾，
+    现按权限层为准修正断言 —— 不能为了保持绿灯而留着互相打架的两套口径。
+    """
     r = route_question("查询 S00002 的成绩", role="teacher", current_user="T00001")
+    assert r["channel"] == "deny"
+    assert "教师" in r["reason"]
+
+
+def test_route_allows_teacher_aggregate_query():
+    """教师查聚合数据属正常业务，不能被上面那条拦截误伤。"""
+    r = route_question("计算机学院有多少学生", role="teacher", current_user="T00001")
+    assert r["channel"] != "deny"
+
+
+def test_route_allows_teacher_querying_own_id_semantics():
+    """教师问「我教的学生」这类无具体学号的问题不应被拦截。"""
+    r = route_question("我教的课程平均分是多少", role="teacher", current_user="T00001")
     assert r["channel"] != "deny"
 
 

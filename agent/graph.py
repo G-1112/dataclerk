@@ -6,18 +6,23 @@
       每步写入 trace（JSONL）
     → 融合回答（带引用溯源）
 
-支持变异体注入（M1-M7，见 testsuite/mutators），用于变异测试：
+支持变异体注入（M1-M10，见 testsuite/mutators），用于变异测试：
     M1 移除 get_schema 工具      M2 记忆截断为最近 2 轮   M3 移除权限过滤层
     M4 政策库投毒                M5 温度提到 1.2（随机扰动） M6 禁用 clarify 工具
     M7 破坏路由判断（总是走 SQL）
+    M8 SQL 列名幻觉（列名被污染成不存在的列）
+    M9 静默数据篡改（执行结果被放大，回答"看起来正常"）
+    M10 记忆只写不读（约束/指代从不生效）
 """
 
 from __future__ import annotations
 
 import random
+import re
 import time
 
 from . import llm
+from .config import MAX_DISPLAY_ROWS, MAX_MEMORY_ROUNDS, MAX_SLOT_KEYS, MAX_STEPS, RAG_TOP_K
 from .db import get_db_path, set_db_path
 from .memory.slots import Slots
 from .router import route_question
@@ -41,9 +46,9 @@ class CampusAgent:
         self.tracer = Tracer(trace_dir)
         self._slots: dict[str, Slots] = {}
         self.mutations: set[str] = set(mutations or [])
-        self.max_steps = 8
-        # 槽位上限（第十二轮新增）：防长跑/压测下 _slots 无界增长（内存线性上涨）。
-        self._max_slot_keys = 1000
+        # 可调参数统一来自 agent/config.py（支持环境变量覆盖），不在此写魔法数字。
+        self.max_steps = MAX_STEPS
+        self._max_slot_keys = MAX_SLOT_KEYS
 
     # ------------------------------------------------------------------
     @staticmethod
@@ -61,7 +66,7 @@ class CampusAgent:
             if len(self._slots) >= self._max_slot_keys:
                 # dict 保持插入序：淘汰最久未用的键（简易 LRU）
                 self._slots.pop(next(iter(self._slots)))
-            max_memory = 2 if "M2" in self.mutations else 20
+            max_memory = 2 if "M2" in self.mutations else MAX_MEMORY_ROUNDS
             self._slots[key] = Slots(max_memory=max_memory)
         else:
             # 命中即提到最新（维持 LRU 语义）
@@ -90,7 +95,10 @@ class CampusAgent:
         # 第十二轮修复（实证 P0）：库级默认角色原为 admin（最高权限），
         # 调用方忘传 role 即获全校数据访问。默认改为最小权限 student。
         slots = self._slots_for(session_id, user_id)
-        resolved = slots.resolve(question)
+        # M10：记忆只写不读 —— 槽位照常记录（history 仍在），但解析时忽略，
+        # 表现为「用户说过的学院约束/指代对象全部失效」。与 M2（截断记忆）不同：
+        # M2 是存不下，M10 是存了不用。
+        resolved = question if "M10" in self.mutations else slots.resolve(question)
 
         # M7：破坏路由（总是走 SQL）
         if "M7" in self.mutations:
@@ -173,6 +181,16 @@ class CampusAgent:
         t0 = time.time()
         sql = llm.generate_sql(question, schema, role, current_user=user_id)
 
+        # M8：SQL 列名幻觉 —— 模型把列名记成了库里不存在的列（Text-to-SQL 最常见失效之一）。
+        # 与 M1（缺 schema 信息）不同：M1 是拿不到结构，M8 是拿到了却记错。
+        if "M8" in self.mutations:
+            sql = _hallucinate_columns(sql)
+
+        # M9：过滤条件被静默丢弃（错误的「SQL 优化/重写」把 WHERE 吃掉）。
+        # 结果集变大却仍报"查询成功"，属于最危险的静默错误。
+        if "M9" in self.mutations:
+            sql = _drop_where(sql)
+
         # M5：温度提到 1.2 → 注入随机扰动，制造结果不一致
         if "M5" in self.mutations and random.random() < 0.5:
             sql = sql.replace("AVG", "COUNT").replace("MAX", "COUNT").replace("MIN", "COUNT")
@@ -190,7 +208,7 @@ class CampusAgent:
     # ------------------------------------------------------------------
     def _rag_channel(self, question: str, trace_id: str, start_step: int = 1) -> str:
         try:
-            snippets = retrieve_policy(question, top_k=3)
+            snippets = retrieve_policy(question, top_k=RAG_TOP_K)
         except Exception as e:  # noqa: BLE001
             # 第十二轮修复：检索工具异常同样优雅降级，不击穿整个请求
             self.tracer.record(trace_id, start_step, "政策检索异常", "tool_error", {}, f"{type(e).__name__}: {e}")
@@ -213,16 +231,51 @@ def _summarize(result: dict) -> str:
     return f"返回 {len(result.get('rows', []))} 行"
 
 
+# --- 变异体 M8：列名幻觉 -----------------------------------------------------
+# 单次正则替换（不用连续的 str.replace）——否则 score→grade_point 之后
+# 再执行 grade→enroll_year 会把新名字二次污染成 enroll_year_point，
+# 变异体就变成「语法错」而不是「列名错」，失去拟真意义。
+_HALLUCINATION_MAP = {
+    "student_id": "stu_no",
+    "course_id": "course_no",
+    "teacher_id": "teacher_no",
+    "course_name": "course_title",
+    "college": "dept_name",
+    "semester": "term",
+    "score": "grade_point",
+    "grade": "enroll_year",
+}
+_HALLUCINATION_RE = re.compile(
+    r"\b(" + "|".join(re.escape(k) for k in _HALLUCINATION_MAP) + r")\b", re.IGNORECASE
+)
+
+
+def _hallucinate_columns(sql: str) -> str:
+    """把真实列名替换成库里不存在的近义列名（模拟模型记错 schema）。"""
+    return _HALLUCINATION_RE.sub(lambda m: _HALLUCINATION_MAP[m.group(0).lower()], sql)
+
+
+# --- 变异体 M9：WHERE 被静默丢弃 ---------------------------------------------
+_WHERE_RE = re.compile(
+    r"\bWHERE\b.*?(?=\bGROUP\s+BY\b|\bORDER\s+BY\b|\bLIMIT\b|;|$)", re.IGNORECASE | re.DOTALL
+)
+
+
+def _drop_where(sql: str) -> str:
+    """删掉 WHERE 子句（保留 GROUP/ORDER/LIMIT），模拟过滤条件被优化器吃掉。"""
+    return _WHERE_RE.sub("", sql).strip()
+
+
 def _format_sql_result(result: dict) -> str:
     if not result.get("ok"):
         return f"查询失败：{result.get('error', '')}"
     rows = result.get("rows", [])
     if not rows:
         return "查询结果为空（可能无匹配记录）。"
-    lines = [", ".join(str(r) for r in row) for row in rows[:20]]
+    lines = [", ".join(str(r) for r in row) for row in rows[:MAX_DISPLAY_ROWS]]
     body = "\n".join(lines)
-    if len(rows) > 20:
-        body += f"\n…（共 {len(rows)} 行，仅显示前 20 行）"
+    if len(rows) > MAX_DISPLAY_ROWS:
+        body += f"\n…（共 {len(rows)} 行，仅显示前 {MAX_DISPLAY_ROWS} 行）"
     if result.get("truncated"):
         body += "\n（注：结果集过大已被截断，如需完整数据请加聚合或筛选条件）"
     return body
