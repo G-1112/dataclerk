@@ -13,12 +13,12 @@ class AgentClient:
         self.agent = agent
 
     def run(self, question: str, role: str = "admin", session_id: str = "", user_id: str = "") -> dict:
-        """运行一次，返回 {answer, channel, trace_id, trace, sql, rows}。"""
+        """运行一次，返回 {answer, channel, trace_id, trace, sql, rows, columns}。"""
         result = self.agent.chat(question, role=role, session_id=session_id, user_id=user_id)
         trace = self.agent.tracer.get(result["trace_id"])
         sql = self._extract_sql(trace)
-        rows = self._exec_sql(sql) if sql else []
-        return {**result, "trace": trace, "sql": sql, "rows": rows}
+        rows, columns = self._exec_sql_full(sql) if sql else ([], [])
+        return {**result, "trace": trace, "sql": sql, "rows": rows, "columns": columns}
 
     @staticmethod
     def _extract_sql(trace: list[dict]) -> str | None:
@@ -29,15 +29,25 @@ class AgentClient:
         return None
 
     @staticmethod
-    def _exec_sql(sql: str) -> list[list[Any]]:
-        """以 admin 身份复算 SQL，得到原始结果集。"""
+    def _exec_sql_full(sql: str | None) -> tuple[list[list[Any]], list[str]]:
+        """以 admin 身份复算 SQL，返回 (行, 列名)。
+
+        第十四轮：多返回列名，供 `equivalence.compare` 做按列对齐 ——
+        没有列名就只能按位置比，"多选了一列"会直接判错。
+        """
         if not sql:
-            return []
+            return [], []
         conn = connect()
         try:
             cur = conn.execute(sql)
-            return [list(r) for r in cur.fetchall()]
+            cols = [d[0] for d in (cur.description or [])]
+            return [list(r) for r in cur.fetchall()], cols
         except Exception:
-            return []
+            return [], []
         finally:
             conn.close()
+
+    @staticmethod
+    def _exec_sql(sql: str) -> list[list[Any]]:
+        rows, _ = AgentClient._exec_sql_full(sql)
+        return rows
