@@ -1,0 +1,20 @@
+[
+  {
+    "name": "deepseek-chat",
+    "base": "https://api.deepseek.com",
+    "model": "deepseek-chat",
+    "key_env": "LLM_API_KEY"
+  },
+  {
+    "name": "qwen-plus",
+    "base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "model": "qwen-plus",
+    "key_env": "QWEN_API_KEY"
+  },
+  {
+    "name": "glm-4-flash",
+    "base": "https://open.bigmodel.cn/api/paas/v4",
+    "model": "glm-4-flash",
+    "key_env": "GLM_API_KEY"
+  }
+]
