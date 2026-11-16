@@ -141,8 +141,8 @@ def test_case_index_covers_all_categories():
 
 
 def test_run_single_case_unknown_id_returns_none():
-    from testsuite.run_suite import run_single_case
     from agent.graph import CampusAgent
+    from testsuite.run_suite import run_single_case
 
     assert run_single_case("NOT-A-REAL-ID", CampusAgent()) is None
 

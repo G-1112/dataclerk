@@ -25,7 +25,7 @@ import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from agent.tools.retrieve_policy import PolicyRetriever, _bigrams, _cosine
+from agent.tools.retrieve_policy import PolicyRetriever, _cosine
 
 # ---------------------------------------------------------------------------
 # 阈值（可按知识库特点调整；报告会显示所用阈值，保证结论可复现）
@@ -145,8 +145,8 @@ def find_quality_issues(snippets: list, docs: dict[str, str]) -> list[dict]:
     for title, text in docs.items():
         if not text.strip():
             issues.append({"kind": "空文档", "doc_id": title, "detail": "文件无有效内容"})
-        lines = [l.strip() for l in text.split("\n") if l.strip()]
-        dup_lines = [l for l, c in Counter(lines).items() if c > 1]
+        lines = [row.strip() for row in text.split("\n") if row.strip()]
+        dup_lines = [row for row, c in Counter(lines).items() if c > 1]
         if dup_lines:
             issues.append(
                 {

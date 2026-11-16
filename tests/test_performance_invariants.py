@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import sqlite3
 
-import sqlglot
 import pytest
+import sqlglot
 
 from agent import db as db_mod
 from agent.guard.permission import PermissionGuard

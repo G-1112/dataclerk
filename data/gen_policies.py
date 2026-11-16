@@ -649,9 +649,9 @@ _CN_NUM = ["一", "二", "三", "四", "五", "六", "七", "八", "九"]
 def render_doc(title: str, topic: str, dept: str, rules: list[str], variant: str) -> str:
     """渲染一篇政策文档：标题行 + 9 条条款（每条一行，便于按段落切片检索）。"""
     if variant == "A":
-        intro, scope, ledger, close, kw = _INTRO_A, _SCOPE_A, _LEDGER_A, _CLOSE_A, "本办法"
+        intro, scope, ledger, close = _INTRO_A, _SCOPE_A, _LEDGER_A, _CLOSE_A
     else:
-        intro, scope, ledger, close, kw = _INTRO_B, _SCOPE_B, _LEDGER_B, _CLOSE_B, "本细则"
+        intro, scope, ledger, close = _INTRO_B, _SCOPE_B, _LEDGER_B, _CLOSE_B
     lines = [title,
              intro.format(topic=topic),
              scope.format(dept=dept),

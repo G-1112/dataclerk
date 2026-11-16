@@ -306,7 +306,6 @@ def render_html(
     # 维度明细表
     dim_rows = []
     for key, name, metric_key in DIMENSIONS:
-        m = metrics.get(key, {})
         val = _dim_value(metrics, key)
         target = 0.9 if key != "security" else 1.0
         status = "✅" if val >= target else "⚠️"

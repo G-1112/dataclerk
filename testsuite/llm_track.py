@@ -76,7 +76,6 @@ os.environ.setdefault("DATACLERK_DB", _db_path)
 
 from agent import db as agent_db  # noqa: E402
 from agent import llm as agent_llm  # noqa: E402
-from agent.router import route_question  # noqa: E402
 from agent.tools.execute_sql import execute_sql  # noqa: E402
 from agent.tools.get_schema import get_schema  # noqa: E402
 from agent.tools.retrieve_policy import retrieve_policy  # noqa: E402

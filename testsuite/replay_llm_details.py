@@ -29,7 +29,7 @@ if hasattr(sys.stdout, "reconfigure"):  # Windows 控制台默认 GBK
 
 from . import equivalence  # noqa: E402
 from .cases import functional_cases  # noqa: E402
-from .run_suite import _expected_rows_full, _atomic_write_text  # noqa: E402
+from .run_suite import _atomic_write_text, _expected_rows_full  # noqa: E402
 
 RELAX_SPEC = {"allow_missing_columns": True}
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """扩容用例的入库前验证脚手架（一次性，验证后删除）。
 
 纪律（memory 铁律）：先跑「已知正确」的基线，确认基线全过，再下结论。
@@ -10,8 +9,6 @@
   python _verify_cases.py --dim rag  # 只验证某一维度
 """
 import sys
-
-sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
 
 from agent.graph import CampusAgent
 from testsuite.cases import (
@@ -35,6 +32,9 @@ from testsuite.run_suite import (
     run_security,
     run_stability,
 )
+
+# 控制台编码统一放在全部 import 之后，避免 E402（import 前不允许有语句）
+sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
 
 
 def main() -> int:

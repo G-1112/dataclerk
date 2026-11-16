@@ -89,7 +89,6 @@ class CampusDB:
     # ------------------------------------------------------------------
     def build(self, scale: dict | None = None) -> None:
         sc = {**SCALE, **(scale or {})}
-        rng = self.rng
         self._gen_teachers(sc["teachers"])
         self._gen_students(sc["students"])
         self._gen_classrooms(sc["classrooms"])

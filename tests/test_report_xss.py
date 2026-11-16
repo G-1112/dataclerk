@@ -15,8 +15,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from testsuite.report.generate_report import (
     DIMENSIONS,
     _defect_rows,

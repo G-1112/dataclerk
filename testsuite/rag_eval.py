@@ -68,11 +68,9 @@ def run_ragas_eval(samples: list[dict]) -> dict:
         return {"status": "skipped", "reason": "未配置 LLM_API_KEY（RAGAS 依赖 LLM-as-judge）"}
 
     try:
-        from ragas import evaluate
-        from ragas.metrics import answer_relevancy, context_precision, faithfulness
-
         # 现代 RAGAS API（0.2+）：EvaluationDataset.from_list
-        from ragas import EvaluationDataset
+        from ragas import EvaluationDataset, evaluate
+        from ragas.metrics import answer_relevancy, context_precision, faithfulness
 
         dataset = EvaluationDataset.from_list(
             [
@@ -120,7 +118,8 @@ def run_deepeval_eval(samples: list[dict]) -> dict:
             )
             for s in samples
         ]
-        result = evaluate(
+        # 评测器会把分数写回 test_cases[i].metrics，因此不接收返回值
+        evaluate(
             test_cases,
             [HallucinationMetric(threshold=0.5), AnswerRelevancyMetric(threshold=0.5)],
             show_indicator=False,

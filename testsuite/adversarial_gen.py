@@ -31,8 +31,7 @@
 from __future__ import annotations
 
 import itertools
-import random
-from typing import Iterable
+from collections.abc import Iterable
 
 # ---------------------------------------------------------------------------
 # 生成素材（取自项目自身数据域，保证生成的用例是「真实可打」的）

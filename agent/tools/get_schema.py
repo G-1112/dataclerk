@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from ..db import SCHEMA, all_tables, describe_table
+from ..db import all_tables, describe_table
 
 
 def get_schema(tables: list[str] | None = None) -> str:

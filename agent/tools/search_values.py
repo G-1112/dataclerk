@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from ..db import connect, get_db_path
+from ..db import connect
 
 
 def search_values(column: str, keyword: str = "", limit: int = 10) -> list[str]:

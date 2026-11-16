@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict, deque
-from typing import Deque
 
 # 单条 question 的字符上限。超长问题会被拼进 prompt，
 # 既放大 token 成本，也可能掩盖注入意图（实测 44000 字可被接受）。
@@ -26,7 +25,7 @@ class RateLimiter:
     def __init__(self, max_calls: int, window_seconds: float = 60.0) -> None:
         self.max_calls = max_calls
         self.window = window_seconds
-        self._hits: dict[str, Deque[float]] = defaultdict(deque)
+        self._hits: dict[str, deque[float]] = defaultdict(deque)
 
     def allow(self, key: str) -> bool:
         """是否放行；放行即记一次。"""

@@ -88,4 +88,4 @@ class Tracer:
         path = self._path(trace_id)
         if path is None or not path.exists():
             return []
-        return [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+        return [json.loads(row) for row in path.read_text(encoding="utf-8").splitlines() if row.strip()]

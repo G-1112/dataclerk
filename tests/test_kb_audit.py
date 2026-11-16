@@ -10,8 +10,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from testsuite import kb_audit as K
 
 

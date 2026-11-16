@@ -46,7 +46,7 @@ def expected_token(user_id: str, role: str, session_id: str, secret: str | None 
     secret = _auth_secret() if secret is None else secret
     return hmac.new(
         secret.encode("utf-8"),
-        f"{user_id}|{role}|{session_id}".encode("utf-8"),
+        f"{user_id}|{role}|{session_id}".encode(),
         hashlib.sha256,
     ).hexdigest()
 

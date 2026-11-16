@@ -25,8 +25,8 @@ from pathlib import Path
 from agent.config import MUTATION_KILL_DROP
 from agent.db import connect
 from agent.graph import CampusAgent
-from . import metrics, rag_eval
-from . import equivalence
+
+from . import equivalence, metrics, rag_eval
 from .agent_client import AgentClient
 from .assert_result import result_hash
 from .cases import (
