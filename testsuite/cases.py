@@ -1,29 +1,29 @@
 """测试用例集（FR-T02）。
 
 覆盖官方 7 维度 + 自创路由/稳定性维度。标准答案由 SQLite 自动执行 expected_sql 生成（零人工标注）。
-本文件即全量评测用例集（`python -m testsuite.run_suite` 加载，共 307 条，由 tests/test_cases_count.py 守卫）。
+本文件即全量评测用例集（`python -m testsuite.run_suite` 加载，由 tests/test_cases_count.py 守卫）。
 
-2026-10-16 扩容（165 → 307，对齐需求文档 3.1 的 370 条计划量级）：
-- functional 18→65：按学院/学期/年级/指标的模板化扩展，全部经 mock 生成器模式核对；
-- security 61→82：越权学号段扩展 + UNION/堆叠/PRAGMA/ATTACH 绕过变体 + 写操作破坏性用例；
-- routing 33→45：sql/rag/clarify 三通道各补；
-- rag 14→38：覆盖 15 篇政策文档的标题关键词；
-- multiturn 10→29 轮：新增约束覆盖（显式改槽）、学期/年级约束、长程链、话题切换；
-- boundary 18→30；stability 3→10 题；performance 8→10。
+2026-11-16 扩容（309 → 545 条断言，对齐需求文档 3.1 的 150/30/40/40/40/60/50 计划量级）：
+- functional 59→150：按 学院×学期×聚合指标(计数/均分/最高/最低) 模板化扩展（简单 60/中等 60/困难 30），
+  含 2 条「该画图时画图」正例（trace 应含 plot_chart）与 1 条「不该画图不画图」反例；
+- multiturn 9 组→30 组：按 指代消解/约束继承/约束误继承/回溯提问 四类模式模板生成；
+- boundary 31→40；stability 10→40 题；rag 38→60（锚定 data/gen_policies.py 生成的政策文档数字规则）；
+- routing 46→50；security 86 不变（已超 40 的计划量级）。
 
 ⚠️ 新增用例的硬约束（mock 模式可过才行，否则指标回归）：
-1. functional 的 question 必须命中 `agent/llm.py` MockSqlGenerator.generate 的既有分支，
+1. functional 的 question 必须命中 `agent/llm.py` MockSqlGenerator.generate 的分支，
    且 expected_sql 与 mock 生成的 SQL **结果集一致**（断言走 result_hash，比的是执行结果）。
-   特别注意模式匹配顺序：「选课人数」会先被「多少+人」截胡成学生人数统计——
-   因此不要构造依赖选课计数的 functional 用例（语义上 mock 答不对）。
+   第十七轮把「选课人数」分支移到「多少+人」的人数统计之前，选课计数类用例不再被截胡。
 2. routing 的 expected_channel 必须与 `agent/router.py` route_question 一致；
    含「选课」的问题会同时命中 sql/rag 关键词 → hybrid，勿标 rag。
 3. rag 的 doc_keywords 必须是政策文档**标题**的子串（recall_hit 判定看 title），
    且问句要能靠 bigram TF-IDF 把该文档排进 top-3——「借书超期」排不进、
-   「借阅超期」可以（实测 2026-10-16），新增后必须跑 _verify_cases.py 验证。
+   「借阅超期」可以（实测 2026-10-16），新增后必须跑 `python -m testsuite.verify_cases --dim rag`。
 4. multiturn 的 expect_college 断言的是「SQL 中出现该学院」——指代轮依赖
    Slots.resolve 的槽位前插（「那…」+ 无学院 → 前插最近显式学院）。
 5. 注入类用例禁用 admin（admin 无限制，拦截成功是平凡成立的，测不出东西）。
+6. functional 的 expect_tools / expect_no_tools 是工具序列断言：trace 中的工具列表
+   必须包含/排除指定工具（当前用于 plot_chart 的正反例）。
 """
 
 from __future__ import annotations
@@ -33,19 +33,27 @@ COLLEGES = [
     "经济管理学院", "外国语学院", "理学院", "文学院",
 ]
 
+# 手写 10 条 + 第十三轮模板扩展 49 条（D1-001~D1-067）。
+# 真实 LLM 轨道（testsuite/llm_track.py）以这一子集为基线（93.2% 口径）：
+# 第十七轮 functional 扩到 150 后，扩容用例只进 mock 套件，避免悄悄改变 LLM 轨道的分母。
+LLM_TRACK_FUNCTIONAL_IDS = tuple(f"D1-{i:03d}" for i in range(1, 68))
 
-def _avg(college: str, semester: str | None = None) -> str:
+
+def _avg(college: str | None, semester: str | None = None) -> str:
     """平均成绩：只统计已结课（status='completed'）的记录。
 
     第十六轮修正：原口径把 withdrawn（退课，仍有分数）也算进平均分，
     与「成绩」的业务含义不符——真实 LLM 自行加了 status 过滤反而被判错。
+    college=None 表示全校口径（与 MockSqlGenerator._avg_score 一致）。
     """
-    sql = (f"SELECT AVG(e.score) FROM enrollments e JOIN students s "
-           f"ON e.student_id = s.student_id "
-           f"WHERE e.status = 'completed' AND s.college = '{college}'")
+    sql = ("SELECT AVG(e.score) FROM enrollments e JOIN students s "
+           "ON e.student_id = s.student_id")
+    conds = ["e.status = 'completed'"]
+    if college:
+        conds.append(f"s.college = '{college}'")
     if semester:
-        sql += f" AND e.semester = '{semester}'"
-    return sql
+        conds.append(f"e.semester = '{semester}'")
+    return sql + " WHERE " + " AND ".join(conds)
 
 
 def _count_students(college: str, grade: str | None = None) -> str:
@@ -55,11 +63,37 @@ def _count_students(college: str, grade: str | None = None) -> str:
     return sql
 
 
-def _maxmin(college: str, fn: str) -> str:
-    """最高/最低分（与 MockSqlGenerator._maxmin_score 同口径：只算已结课记录）。"""
-    return (f"SELECT {fn}(e.score) FROM enrollments e JOIN students s "
-            f"ON e.student_id = s.student_id "
-            f"WHERE e.status = 'completed' AND s.college = '{college}'")
+def _maxmin(college: str | None, fn: str, semester: str | None = None) -> str:
+    """最高/最低分（与 MockSqlGenerator._maxmin_score 同口径：只算已结课记录）。
+
+    第十七轮：支持全校口径（college=None）与学期过滤，用于学院×学期×指标矩阵扩容。
+    """
+    sql = (f"SELECT {fn}(e.score) FROM enrollments e JOIN students s "
+           "ON e.student_id = s.student_id")
+    conds = ["e.status = 'completed'"]
+    if college:
+        conds.append(f"s.college = '{college}'")
+    if semester:
+        conds.append(f"e.semester = '{semester}'")
+    return sql + " WHERE " + " AND ".join(conds)
+
+
+def _maxmin_sem(college: str, fn: str, semester: str) -> str:
+    return _maxmin(college, fn, semester)
+
+
+def _count_enroll(college: str | None, semester: str | None = None) -> str:
+    """选课人数（与 MockSqlGenerator._count_enrollments 同口径）。"""
+    sql = ("SELECT COUNT(*) FROM enrollments e JOIN students s "
+           "ON e.student_id = s.student_id")
+    conds = []
+    if college:
+        conds.append(f"s.college = '{college}'")
+    if semester:
+        conds.append(f"e.semester = '{semester}'")
+    if conds:
+        sql += " WHERE " + " AND ".join(conds)
+    return sql
 
 
 def _group_by_college_count() -> str:
@@ -121,12 +155,19 @@ def functional_cases() -> list[dict]:
     cases = list(FUNCTIONAL)
     i = 19
 
-    def add(question: str, sql: str, difficulty: str, tags: list[str]) -> None:
+    def add(question: str, sql: str, difficulty: str, tags: list[str],
+            expect_tools: list[str] | None = None,
+            expect_no_tools: list[str] | None = None) -> None:
         nonlocal i
-        cases.append({
+        case = {
             "id": f"D1-{i:03d}", "question": question, "expected_sql": sql,
             "difficulty": difficulty, "tags": tags, "role": "admin",
-        })
+        }
+        if expect_tools:
+            case["expect_tools"] = expect_tools
+        if expect_no_tools:
+            case["expect_no_tools"] = expect_no_tools
+        cases.append(case)
         i += 1
 
     # 1) 平均绩点：补齐未手写覆盖的 5 个学院（mock：平均|绩点 + 成绩|绩点|分 → _avg_score）
@@ -185,6 +226,84 @@ def functional_cases() -> list[dict]:
     # 10) 消费总额（mock：消费 → _transactions(None)；句中不能出现「学生」否则被计数截胡）
     add("全校校园卡消费总额是多少？", _total_consumption(), "中等", ["sum", "aggregate"])
     add("所有校园卡消费的总额是多少？", _total_consumption(), "中等", ["sum", "aggregate"])
+
+    # ------------------------------------------------------------------
+    # 2026-11-16 扩容（59 → 150）：学院 × 学期 × 聚合指标（计数/均分/最高/最低）
+    # 分层组合，难度分布 简单 60 / 中等 60 / 困难 30。
+    # mock 生成器已把「选课人数」分支移到「多少+人」之前，选课计数用例不再被截胡。
+    # ------------------------------------------------------------------
+    # 11) 人数统计：补齐尚未手写覆盖的 6 个学院
+    for c in ["软件学院", "电子信息学院", "经济管理学院", "外国语学院", "理学院", "文学院"]:
+        add(f"{c}有多少学生？", _count_students(c), "简单", ["count", "filter"])
+
+    # 12) 年级过滤人数：8 学院 × 4 年级矩阵补齐（原有 8 条 → 全覆盖；机械 2022 作为 plot_chart 反例）
+    for (c, g) in [
+        ("计算机学院", "2024"), ("计算机学院", "2025"),
+        ("软件学院", "2022"), ("软件学院", "2023"),
+        ("电子信息学院", "2022"), ("电子信息学院", "2023"),
+        ("电子信息学院", "2024"), ("电子信息学院", "2025"),
+        ("机械工程学院", "2023"), ("机械工程学院", "2024"), ("机械工程学院", "2025"),
+        ("经济管理学院", "2024"), ("经济管理学院", "2025"),
+        ("外国语学院", "2022"), ("外国语学院", "2023"),
+        ("外国语学院", "2024"), ("外国语学院", "2025"),
+        ("理学院", "2022"), ("理学院", "2023"),
+        ("理学院", "2024"), ("理学院", "2025"),
+        ("文学院", "2022"), ("文学院", "2023"),
+    ]:
+        add(f"{c}{g}级有多少学生？", _count_students(c, g), "简单", ["count", "filter"])
+
+    # 13) 教师列表：老师/教师两种问法覆盖 8 个学院
+    for c in ["电子信息学院", "机械工程学院", "外国语学院", "文学院"]:
+        add(f"{c}有哪些老师？", _teachers(c), "简单", ["list", "filter"])
+    for c in ["计算机学院", "软件学院", "经济管理学院", "理学院"]:
+        add(f"{c}有哪些教师？", _teachers(c), "简单", ["list", "filter"])
+
+    # 14) 最高分：补齐其余 4 个学院
+    for c in ["电子信息学院", "机械工程学院", "外国语学院", "文学院"]:
+        add(f"{c}的最高分是多少？", _maxmin(c, "MAX"), "简单", ["aggregate", "filter"])
+
+    # 15) 全校课程 / 分组问法 / 全校奖学金项目
+    add("全校有哪些课程？", "SELECT course_name FROM courses", "简单", ["list"])
+    add("各学院学生人数统计", _group_by_college_count(), "简单", ["groupby"])
+    add("全校有哪些奖学金？", "SELECT name, COUNT(*) FROM scholarships GROUP BY name", "简单", ["list", "groupby"])
+
+    # 16) 选课人数（学院维度；mock 分支顺序修复后可用）
+    for c in COLLEGES:
+        add(f"{c}有多少人选课？", _count_enroll(c), "中等", ["count", "join", "filter"])
+
+    # 17) 奖学金种类数：补齐其余 4 个学院
+    for c in ["电子信息学院", "机械工程学院", "经济管理学院", "理学院"]:
+        add(f"{c}的奖学金有多少种？", _scholarship_kinds(c), "中等", ["count", "join"])
+
+    # 18) 学期过滤最高分（8 学院 × 2024-SPRING）
+    for c in COLLEGES:
+        add(f"2024年春季{c}的最高分是多少？", _maxmin_sem(c, "MAX", "2024-SPRING"), "中等", ["aggregate", "filter"])
+
+    # 19) 全校聚合 + 「该画图时画图」正例（分组形态 → trace 应含 plot_chart）
+    add("全校学生的平均绩点是多少？", _avg(None), "中等", ["join", "aggregate"])
+    add("全校学生的最高分是多少？", _maxmin(None, "MAX"), "中等", ["aggregate"])
+    add("全部学院的学生人数分布", _group_by_college_count(), "中等", ["groupby"], expect_tools=["plot_chart"])
+
+    # 20) 学期过滤最低分（4 学院 × 2023-FALL）
+    for c in ["计算机学院", "软件学院", "经济管理学院", "理学院"]:
+        add(f"2023年秋季{c}的最低分是多少？", _maxmin_sem(c, "MIN", "2023-FALL"), "中等", ["aggregate", "filter"])
+
+    # 21) 学期过滤最低分（8 学院 × 2024-FALL）
+    for c in COLLEGES:
+        add(f"2024年秋季{c}的最低分是多少？", _maxmin_sem(c, "MIN", "2024-FALL"), "困难", ["aggregate", "filter"])
+
+    # 22) 学期过滤最高分（7 学院 × 2025-SPRING）
+    for c in ["计算机学院", "软件学院", "电子信息学院", "机械工程学院", "经济管理学院", "外国语学院", "理学院"]:
+        add(f"2025年春季{c}的最高分是多少？", _maxmin_sem(c, "MAX", "2025-SPRING"), "困难", ["aggregate", "filter"])
+
+    # 23) 选课人数（学院+学期双过滤）
+    for c in ["计算机学院", "经济管理学院", "文学院"]:
+        add(f"2024年春季{c}有多少人选课？", _count_enroll(c, "2024-SPRING"), "困难", ["count", "join", "filter"])
+
+    # 24) plot_chart 正例（分组均分 → 图表）与反例（单值聚合 → 不得画图）
+    add("各学院平均成绩排行榜", _group_by_college_avg(), "困难", ["groupby", "aggregate"], expect_tools=["plot_chart"])
+    add("机械工程学院2022级有多少学生？", _count_students("机械工程学院", "2022"), "简单", ["count", "filter"],
+        expect_no_tools=["plot_chart"])
 
     return cases
 
@@ -412,6 +531,65 @@ MULTITURN = [
 ]
 
 
+def _multiturn_template_groups() -> list[dict]:
+    """按 4 类模式模板化生成多轮对话组（第十七轮扩容 9 → 30 组）：
+
+    - 指代消解：显式学院后连续「那…」追问（依赖 Slots.resolve 槽位前插）；
+    - 约束继承：中途显式换学院，后续指代应继承**新**学院；
+    - 约束误继承：换学院后旧学院不得残留（misinherit 指标的数据来源）；
+    - 回溯提问：先 A 后 B 再「回到A」，指代应回到最近显式学院 A。
+    """
+    groups: list[dict] = []
+    seq = 12  # 已有 D2-001..011（3、10 跳号），新组从 D2-012 起
+
+    def add(turns: list[dict]) -> None:
+        nonlocal seq
+        groups.append({"id": f"D2-{seq:03d}", "turns": turns})
+        seq += 1
+
+    # 模式一：指代消解长链（7 组 × 4 轮；计算机学院已有 D2-009 覆盖）
+    for c in ["软件学院", "电子信息学院", "机械工程学院", "经济管理学院", "外国语学院", "理学院", "文学院"]:
+        add([
+            {"question": f"{c}有多少学生？", "expect_college": c},
+            {"question": "那平均绩点呢？", "expect_college": c},
+            {"question": "那最高分是多少？", "expect_college": c},
+            {"question": "那最低分呢？", "expect_college": c},
+        ])
+
+    # 模式二：约束继承（显式换学院后，指代继承新学院；6 组 × 4 轮）
+    for (a, b) in [("计算机学院", "理学院"), ("软件学院", "经济管理学院"), ("文学院", "外国语学院"),
+                   ("机械工程学院", "电子信息学院"), ("理学院", "计算机学院"), ("经济管理学院", "软件学院")]:
+        add([
+            {"question": f"{a}有多少学生？", "expect_college": a},
+            {"question": f"{b}呢？", "expect_college": b},
+            {"question": "那平均绩点呢？", "expect_college": b},
+            {"question": "那最高分呢？", "expect_college": b},
+        ])
+
+    # 模式三：约束误继承（换学院后旧学院不得残留；4 组 × 3 轮）
+    for (a, b) in [("计算机学院", "文学院"), ("电子信息学院", "外国语学院"),
+                   ("机械工程学院", "经济管理学院"), ("软件学院", "理学院")]:
+        add([
+            {"question": f"{a}有多少学生？", "expect_college": a},
+            {"question": f"{b}有多少学生？", "expect_college": b},
+            {"question": "那平均绩点呢？", "expect_college": b},
+        ])
+
+    # 模式四：回溯提问（回到先前学院；4 组 × 4 轮）
+    for (a, b) in [("理学院", "经济管理学院"), ("外国语学院", "计算机学院"),
+                   ("经济管理学院", "机械工程学院"), ("文学院", "电子信息学院")]:
+        add([
+            {"question": f"{a}有多少学生？", "expect_college": a},
+            {"question": f"{b}有多少学生？", "expect_college": b},
+            {"question": f"那回到{a}呢？", "expect_college": a},
+            {"question": "那平均绩点呢？", "expect_college": a},
+        ])
+    return groups
+
+
+MULTITURN = MULTITURN + _multiturn_template_groups()
+
+
 # ---------------------------------------------------------------------------
 # D5 边界与异常
 # ---------------------------------------------------------------------------
@@ -439,6 +617,29 @@ STABILITY = [
     {"id": "D3-008", "question": "图书馆借阅逾期怎么办？", "runs": 10},
     {"id": "D3-009", "question": "转专业有什么要求？", "runs": 10},
     {"id": "D3-010", "question": "奖学金评定需要什么条件？", "runs": 10},
+]
+
+# 第十七轮扩容（10 → 40 题）：sql 通道覆盖全部学院的常见指标，rag 通道补政策主题。
+STABILITY += [
+    {"id": f"D3-{i:03d}", "question": q, "runs": 10}
+    for i, q in enumerate([
+        # sql 通道：人数 / 均分 / 课程 / 年级 / 极值 / 选课
+        "电子信息学院有多少学生？", "机械工程学院有多少学生？", "经济管理学院有多少学生？",
+        "外国语学院有多少学生？", "理学院有多少学生？", "文学院有多少学生？",
+        "软件学院的平均绩点是多少？", "电子信息学院的平均绩点是多少？",
+        "机械工程学院的平均绩点是多少？", "外国语学院的平均绩点是多少？",
+        "理学院的平均绩点是多少？",
+        "软件学院有哪些课程？", "电子信息学院有哪些课程？", "机械工程学院有哪些课程？",
+        "经济管理学院有哪些课程？",
+        "计算机学院2023级有多少学生？", "软件学院2024级有多少学生？",
+        "理学院2025级有多少学生？", "文学院2023级有多少学生？",
+        "软件学院的最高分是多少？", "经济管理学院的最低分是多少？",
+        "理学院的最高分是多少？", "文学院的最低分是多少？",
+        "计算机学院有多少人选课？",
+        # rag 通道：政策主题稳定性（检索 + mock 合成均确定性）
+        "助学金和奖学金的区别是什么？", "宿舍熄灯时间是什么？", "校园卡丢了怎么挂失？",
+        "休学最多可以休几年？", "复学流程是什么？", "缓考要什么条件？",
+    ], start=11)
 ]
 
 
@@ -469,6 +670,19 @@ def boundary_cases() -> list[dict]:
         extra.append({
             "id": f"D5-b{len(extra) + 1:03d}", "question": q,
             "expect_graceful": True, "expect_clarify": False,
+        })
+    # 第十七轮扩容（31 → 40）：更多不存在对象 / SQL 字符串直入 / 无信息语气词
+    for q in ["银河学院有多少学生？", "深空学院有哪些课程？", "幻影学院有哪些老师？",
+              "SELECT * FROM students", "课程" * 300,
+              "查询不存在的消费记录表", "2026年春季全校的平均成绩"]:
+        extra.append({
+            "id": f"D5-b{len(extra) + 1:03d}", "question": q,
+            "expect_graceful": True, "expect_clarify": False,
+        })
+    for bad in ["唔", "呃嗯"]:
+        extra.append({
+            "id": f"D5-b{len(extra) + 1:03d}", "question": bad,
+            "expect_graceful": True, "expect_clarify": True,
         })
     return BOUNDARY + extra
 
@@ -501,6 +715,13 @@ def routing_cases() -> list[dict]:
     for q in ["查一下", "那个", "怎么"]:
         extra.append({"id": f"D7-r{len(extra) + 1:03d}",
                       "question": q, "expected_channel": "clarify"})
+    # 第十七轮扩容（46 → 50）：补齐 sql 通道 + 新政策主题（rag）
+    for q, ch in [("经济管理学院2024级有多少学生？", "sql"),
+                  ("文学院有哪些教师？", "sql"),
+                  ("实验室安全考试怎么申请？", "rag"),
+                  ("交换生选拔的条件是什么？", "rag")]:
+        extra.append({"id": f"D7-r{len(extra) + 1:03d}",
+                      "question": q, "expected_channel": ch})
     return ROUTING + extra
 
 
@@ -542,6 +763,29 @@ def rag_cases() -> list[dict]:
             ("转专业什么时候申请？", ["转专业"]),
             ("休学最多可以休几年？", ["休学"]),
             ("复学流程是什么？", ["复学"]),
+            # 第十七轮扩容（38 → 60）：锚定 data/gen_policies.py 生成的政策文档数字规则
+            ("自习室的开放时间是几点到几点？", ["自习室"]),
+            ("自习座位预约后不去会怎么样？", ["自习"]),
+            ("宿舍晚归怎么登记？", ["宿舍"]),
+            ("宿舍卫生检查不合格会怎样？", ["宿舍"]),
+            ("校园卡补办要多少钱？", ["校园卡"]),
+            ("校园卡余额上限是多少？", ["校园卡"]),
+            ("食堂早餐几点开始供应？", ["食堂"]),
+            ("学费缓交最长可以缓多久？", ["学费"]),
+            ("社团最多可以加入几个？", ["社团"]),
+            ("第二课堂毕业前要修多少学分？", ["第二课堂"]),
+            ("实验室安全考试多少分合格？", ["实验室"]),
+            ("游泳馆一次门票多少钱？", ["体育馆"]),
+            ("心理咨询每次多长时间？", ["心理"]),
+            ("校医院急诊晚上有人吗？", ["校医院"]),
+            ("校园网账号最多几台设备同时在线？", ["网络"]),
+            ("门禁卡丢了怎么补办？", ["门禁"]),
+            ("毕业档案什么时候转出？", ["档案"]),
+            ("成绩单证明怎么开？", ["证明"]),
+            ("处分解除后评奖评优资格恢复吗？", ["处分"]),
+            ("保研的绩点排名要求是多少？", ["保研"]),
+            ("讲座参加多少场能加学分？", ["讲座"]),
+            ("交换生出国前学分怎么预认定？", ["交换生"]),
         ], start=1)
     ]
     return RAG + extra

@@ -1,0 +1,25 @@
+# RAG 专项评测（RAGAS / DeepEval）的可选依赖清单
+#
+# 为什么单独一份文件：
+#   ragas / deepeval 历史版本存在 SSRF 与不安全 pickle 反序列化（CVE 已披露）等
+#   供应链风险，因此不进主依赖、不进 uv.lock 默认安装；本文件只服务于
+#   「评委要求实跑官方点名工具」的场景，由使用者主动安装并承担供应链选择。
+#
+# 安装（项目已有 uv）：
+#   uv pip install -r requirements-eval.txt
+# 或用 pyproject 的等价 extra：
+#   uv sync --extra dev --extra rag-eval
+# 或纯 pip：
+#   pip install -r requirements-eval.txt
+#
+# 真跑还需要：
+#   1. LLM_API_KEY（.env / 环境变量，DeepSeek / Qwen / GLM 任一）—— rag_eval 用它判定；
+#   2. 注意：RAGAS / DeepEval 默认 judge 端点为 OpenAI（需 OPENAI_API_KEY）。
+#      本项目只有 DeepSeek 等兼容 Key、未配置 OPENAI_API_KEY，故 rag_eval.py 在
+#      未配置时返回 status=skipped 并写明原因——不伪造分数。
+#      如需以 OpenAI 兼容端点（如 DeepSeek）作为 judge，需按 ragas 文档用
+#      LangchainLLMWrapper(ChatOpenAI(base_url=...)) 显式包裹后再 evaluate()，
+#      这一步超出当前提交范围（见 README「评测扩展」）。
+ragas>=0.2.0
+deepeval>=1.0.0
+datasets>=2.20.0

@@ -1,6 +1,8 @@
-"""用例规模与对抗用例结构测试（Task #14；2026-10-16 第十三轮扩容）。
+"""用例规模与对抗用例结构测试（Task #14；2026-10-16 第十三轮扩容、2026-11-16 第十七轮扩容）。
 
-- 用例总数 >= 300（原 ~60 → 165 → 307；需求文档 3.1 计划量级约 370）；
+- 用例总数与各维度数量锁定为需求文档 3.1 的计划量级
+  （D1 功能 150 / D2 多轮 30 组 / D3 稳定性 40 / D4 安全 40+ / D5 边界 40 /
+   D6 RAG 60 / D7 路由 50；D4 已扩到 86，取实际值）；
 - 各维度设有下限，防止「只堆某一维度」的注水式扩容；
 - functional 维度内不得有重复问句（同一问题两条用例会被读成注水）；
 - 注入/绕过类对抗用例不得使用 admin（admin 无限制，测不出任何东西）；
@@ -35,11 +37,11 @@ def _total_cases() -> int:
 
 def test_total_cases_exceeds_150():
     n = _total_cases()
-    assert n >= 300, f"用例总数应 >= 300，实际 {n}"
+    assert n >= 500, f"用例总数应 >= 500，实际 {n}"
 
 
 def test_per_dimension_minimums():
-    """各维度下限（第十三轮扩容后锁定，防注水式扩容）。"""
+    """各维度下限（第十七轮扩容后锁定，防注水式扩容）。"""
     minimums = {
         "functional": len(functional_cases()),
         "security": len(security_cases()),
@@ -52,9 +54,14 @@ def test_per_dimension_minimums():
     }
     for dim, n in minimums.items():
         assert n >= {
-            "functional": 50, "security": 70, "routing": 40, "rag": 30,
-            "multiturn": 25, "boundary": 25, "stability": 8, "performance": 8,
+            "functional": 150, "security": 86, "routing": 50, "rag": 60,
+            "multiturn": 100, "boundary": 40, "stability": 40, "performance": 8,
         }[dim], f"{dim} 用例数应达到下限，实际 {n}"
+
+
+def test_multiturn_group_count():
+    """D2 多轮对话按需求文档扩到 30 组。"""
+    assert len(MULTITURN) >= 30, f"multiturn 应有 30 组，实际 {len(MULTITURN)}"
 
 
 def test_no_duplicate_functional_questions():

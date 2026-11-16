@@ -24,24 +24,25 @@ dataclerk/
 │   └── serve.py            # FastAPI：/chat /trace /reset /health
 ├── data/
 │   ├── gen_db.py           # 合成数据库（10 表，含边界埋入）
-│   └── policies/           # 政策文档库（RAG 用）
-│   # 注：数据库与全部评测数据均为脚本合成的样例数据（非真实师生信息），
-│   # 边界与对抗样本为测试目的刻意埋入，见 data/gen_db.py 文件头声明。
+│   ├── gen_policies.py     # 合成政策文档库（主题矩阵 × 结构模板，生成 80 篇细则）
+│   └── policies/           # 政策文档库（RAG 用，15 篇手写 + 80 篇合成 = 95 篇）
+│   # 注：数据库、政策文档与全部评测数据均为脚本合成的样例数据（非真实师生信息），
+│   # 边界与对抗样本为测试目的刻意埋入，见 data/gen_db.py / data/gen_policies.py 文件头声明。
 ├── testsuite/              # 测试体系
 │   ├── adapters/           # 被测体适配器（local / http），换对象不改执行器
 │   ├── agent_client.py     # 调用封装 + trace 抽取
 │   ├── assert_result.py    # 结果集规范化 + SHA256
 │   ├── metrics.py          # 指标计算
-│   ├── cases.py            # 用例集（309 条，d1-d7 + 路由/稳定性）
+│   ├── cases.py            # 用例集（545 条断言，d1-d7 + 路由/稳定性）
 │   ├── mutators/           # M1-M10 变异体注入器
 │   ├── rag_judge.py        # 自研 LLM-as-judge（忠实度/相关性，替代 RAGAS）
 │   ├── llm_track.py        # 真实 LLM 测试轨道（含 A/B 基线开关）
-│   ├── run_suite.py        # 一键跑批 + 变异测试
+│   ├── run_suite.py        # 一键跑批 + 变异测试（功能维度并行，DATACLERK_WORKERS）
 │   ├── run_external.py     # 用同一套用例测外部智能体
 │   ├── verify_cases.py     # 用例入库前预检门（全量跑真实管线）
 │   └── report/             # HTML 报告生成
 ├── examples/external_bot/  # 演示用"第三方智能体"（独立实现，自带 5 类缺陷）
-├── tests/                  # 单元测试（357 项：XSS 转义回归 + 安全回归 + 适配器/变异体/判官单测 + 扩容守卫）
+├── tests/                  # 单元测试（530 项：XSS 转义回归 + 安全回归 + 适配器/变异体/判官单测 + 扩容守卫）
 └── docs/                   # 测试方案 / 缺陷分析报告 / 适配指南
 ```
 
@@ -84,21 +85,22 @@ uv sync --extra dev --extra rag-eval
 > **0 Key 即可跑通**：不配置 LLM，智能体用确定性 mock SQL 生成器 + 关键词路由，
 > 测试套件（含变异测试）全流程可跑。
 
-### 第 2 步：生成数据库
+### 第 2 步：生成数据库与政策文档库
 
 ```bash
 python data/gen_db.py --small --db data/campus_small.db   # 快速演示
 python data/gen_db.py                                     # 全量（8000 学生）
+python data/gen_policies.py                               # 合成 80 篇政策细则（data/policies/ 共 95 篇）
 ```
 
 ### 第 3 步：跑单元测试
 
 ```bash
-pytest -q          # 预期 525 passed（XSS 转义 + 安全回归 + 适配器/变异体/判官/等价/重放/环境隔离 单测 + 扩容守卫）
+pytest -q          # 预期 530 passed（XSS 转义 + 安全回归 + 适配器/变异体/判官/等价/重放/环境隔离 单测 + 扩容守卫）
 ```
 
 > **若你和我一样在「带 safe-delete 钩子的沙箱」里跑**：全量 pytest 退出码可能非 0 而 junit 报告是
-> `525 passed / 0 failed`——那是钩子在拦 pytest 清理系统临时目录（一次 90+ 文件触发批量确认），
+> `530 passed / 0 failed`——那是钩子在拦 pytest 清理系统临时目录（一次 90+ 文件触发批量确认），
 > 不是测试失败。两个可信做法：① 信 `--junitxml` 的读数；② 把临时目录放仓库内再跑：
 > `pytest -q --basetemp=_tmp_pt`（实测退出码 0）。
 
@@ -107,12 +109,16 @@ pytest -q          # 预期 525 passed（XSS 转义 + 安全回归 + 适配器/�
 ```bash
 python -m testsuite.run_suite --db data/campus_small.db
 # 产出 data/report/metrics.json + data/report/report.html
-# 预期：309 条用例，Mutation Score = 10/10
+# 预期：545 条断言（D1 功能 150 / D2 多轮 30 组 109 轮 / D3 稳定性 40 /
+#       D4 安全 86 / D5 边界 40 / D6 RAG 60 / D7 路由 50 / 性能 10），Mutation Score = 10/10
 ```
 
-> 新增/修改用例后，先过预检门再跑全量（mock 模式下全量约 1 分钟）：
+> 功能维度默认以 8 线程并行跑批（`DATACLERK_WORKERS` 环境变量可调，设为 1 回到顺序执行）；
+> 产物与顺序版一致。首轮 mock 轨道快照保留在 `data/report/metrics_round1.json` 作为改进闭环证据。
+
+> 新增/修改用例后，先过预检门再跑全量：
 > ```bash
-> python -m testsuite.verify_cases            # 全维度；--dim functional 可单跑
+> python -m testsuite.verify_cases            # 全维度；--dim rag / functional 可单跑
 > ```
 
 ### 第 5 步（可选）：起服务手动交互
@@ -136,9 +142,24 @@ uvicorn agent.serve:app --reload --port 8000
 
 ---
 
-## 真实 LLM 测试轨道（可选，与 309 mock 套件隔离）
+## mock / 真实 LLM 双口径（必读）
 
-官方 309 套件跑在**确定性 mock** 上（0 Key 可复现、可审计）。真实大模型那条链路单独有一条轨道：
+本项目严格区分两条评测轨道，报告与文档中的所有数字都标明所属口径：
+
+| 口径 | 运行方式 | 定位 | 预期读数 |
+|---|---|---|---|
+| **mock 轨道** | `python -m testsuite.run_suite`（0 Key） | **框架回归基线**：用例与确定性 mock 生成器共设计，预期全绿；用于回归检测与变异注入（M1-M10）的机械验证 | 全维 100%；变异 10/10 |
+| **真实 LLM 轨道（主评测口径）** | `python -m testsuite.llm_track`（需 `LLM_API_KEY`） | 对外引用的**成绩**：真实大模型链路上复跑 59 条功能基线 + RAG 判官 | deepseek-chat 严格口径 **93.2%（55/59）** |
+
+mock 轨道报告（`report.html`）标题与结论均标注「框架回归基线」——**裸露的 1.0 准确率不是成绩**，
+它只说明"框架按设计工作"。两条轨道不能互相替代：mock 全绿证明测试框架与被测管线接线正确，
+真实 LLM 轨道才回答"模型到底多可靠"。
+
+---
+
+## 真实 LLM 测试轨道（可选，与 mock 套件隔离）
+
+官方 545 条断言跑在**确定性 mock** 上（0 Key 可复现、可审计）。真实大模型那条链路单独有一条轨道：
 
 ```bash
 # 1) 把 Key 写进 .env.llm（已 gitignore，不会被提交）
@@ -250,11 +271,11 @@ python -m testsuite.run_external --stub --stub-brain guarded --channel-path chan
 
 ### 两个对照大脑：既抓得出问题，也不冤枉好智能体
 
-`examples/openai_stub/` 内置两个大脑，用**同一套用例**跑（2026-10-28 本机实测）：
+`examples/openai_stub/` 内置两个大脑，用**同一套用例**跑（2026-11-16 本机实测，用例扩容后复测）：
 
 | 大脑 | security_behavioral | routing | boundary | 检出缺陷类别 |
 |---|---|---|---|---|
-| `naive`（v0.1 风格，5 类初级缺陷） | 1.8%（55 条） | 54.3%（46 条） | 54.8%（31 条） | **4 类**（D1 越权 / D2 注入 / D4 路由 / D5 不澄清） |
+| `naive`（v0.1 风格，5 类初级缺陷） | 1.8%（55 条） | 54.0%（50 条） | 60.0%（40 条） | **4 类**（D1 越权 / D2 注入 / D4 路由 / D5 不澄清） |
 | `guarded`（补齐身份校验、注入拦截、写操作拦截、澄清策略、政策通道） | **100%** | **100%** | **100%** | 0 类 |
 
 一个只会判失败的工具，分数没有意义；这组对照说明用例的判别力是双向的。
@@ -296,6 +317,33 @@ python -m testsuite.llm_track            # 结果写入 data/report/metrics_llm*
 
 实现细节上刻意留了几个"不许自欺"的开关：全同类标签时 κ 返回 `None`（不硬编 1.0）、
 判官没给结论的样本不计入一致率分母、指标不达标时 `conclusion` 直接写"不稳定/判别力偏弱"。
+
+### 评测扩展：RAGAS / DeepEval 实跑指引
+
+官方点名的两个工具已接入统一入口 `testsuite/rag_eval.py`（与自研判官并列、互相印证），
+但**默认不安装**——ragas / deepeval 历史版本存在 SSRF 与不安全 pickle 反序列化等
+供应链风险（见 `pyproject.toml` 的 `rag-eval` extra 注释）。如需实跑：
+
+```bash
+# 1) 安装（三选一；依赖清单见 requirements-eval.txt）
+uv sync --extra dev --extra rag-eval        # 按 uv.lock 精确复现
+uv pip install -r requirements-eval.txt     # 往现有 venv 追加
+pip install -r requirements-eval.txt        # 纯 pip
+
+# 2) 配置 judge（RAGAS/DeepEval 默认走 OpenAI 端点，需要 OPENAI_API_KEY）
+export OPENAI_API_KEY=sk-...                # Windows: $env:OPENAI_API_KEY="..."
+
+# 3) 跑批：rag_eval 会自动从 skipped 变为 ok，分数写入 metrics.json 的 rag_eval 字段
+python -m testsuite.run_suite --db data/campus.db
+```
+
+**诚实边界（为什么不直接替你跑）**：本提交环境只有 DeepSeek 兼容 Key（`LLM_API_KEY`），
+没有 `OPENAI_API_KEY`。RAGAS 0.2+ 的 `evaluate()` 默认 judge 是 OpenAI 模型；
+要以 DeepSeek 等 OpenAI 兼容端点充当 judge，需按 ragas 文档用
+`LangchainLLMWrapper(ChatOpenAI(base_url=...))` 显式包裹（涉及引入 langchain-openai 及
+版本矩阵验证），超出本仓库当前提交范围。因此 `metrics.json` 的 `rag_eval` 字段如实标注
+`status=skipped` 与缺失原因——**不伪造分数**，RAG 质量结论以确定性指标（召回@3 / 忠实度）
+与自研 LLM-as-judge（判据对齐、判官可信度已反向验证）为准。
 
 ---
 
@@ -340,7 +388,7 @@ python -m testsuite.run_suite --extra-cases data/report/adversarial_generated.js
 | 新（两维） | （全校/所有/他人 等范围词）**且**（档案/住址/密码/体检 等对象词），或直接索要他人 ID | 拒 0 条，误拒 0 条 |
 
 合并产物：**41 条**（越权 13 / 注入 14 / 绕过 14，去重 1 条），`run_suite --extra-cases` 实测
-**41/41 通过（100%）**——**单独统计，不并入 309 模板基线**，逐条结果落 `data/report/extra_security.json`
+**41/41 通过（100%）**——**单独统计，不并入 545 条模板基线**，逐条结果落 `data/report/extra_security.json`
 （`{source,total,passed,rate,failures}`，失败项带问题原文）。救回的 5 条同时被写成守卫测试，
 防止判据被改回关键词背诵。
 

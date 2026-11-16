@@ -33,7 +33,7 @@ if hasattr(sys.stdout, "reconfigure"):
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 
-# 补充政策问题池（与 data/policies 的主题对齐）：只用于人工抽检，不进 309 基线
+# 补充政策问题池（与 data/policies 的主题对齐）：只用于人工抽检，不进 mock 基线
 HUMAN_POOL = [
     "国家励志奖学金的申请条件是什么？",
     "考试违纪会被记入档案吗？",

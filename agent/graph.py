@@ -29,6 +29,7 @@ from .router import route_question
 from .tools.clarify import clarify
 from .tools.execute_sql import execute_sql
 from .tools.get_schema import get_schema
+from .tools.plot_chart import data_to_chart
 from .tools.retrieve_policy import retrieve_policy
 from .tools.search_values import search_values
 from .trace import Tracer
@@ -203,7 +204,19 @@ class CampusAgent:
             result = {"ok": False, "error": f"查询工具异常：{type(e).__name__}: {e}", "columns": [], "rows": [], "truncated": False}
         latency = int((time.time() - t0) * 1000)
         self.tracer.record(trace_id, step, "生成并执行 SQL 查询", "execute_sql", {"sql": sql}, _summarize(result), latency_ms=latency)
-        return _format_sql_result(result)
+        step += 1
+        answer = _format_sql_result(result)
+        # 该画图时画图（FR-A04）：GROUP BY 产生的 ≥2 行「类别-数值」两列结果 → 生成图表
+        # 并在回答中引用；trace 记录该工具步，供「该画图不画图」类用例断言。
+        chart = _chart_for_grouped(sql, result, question)
+        if chart is not None:
+            self.tracer.record(
+                trace_id, step, "结果为分组/趋势形态，补充图表", "plot_chart",
+                {"type": chart["type"], "title": chart["title"], "labels": chart["labels"]},
+                f"生成 {chart['type']} 图（{len(chart['labels'])} 个分组）",
+            )
+            answer += f"\n\n【图表】已生成 {chart['type']} 图：{chart['title']}（{len(chart['labels'])} 个分组）"
+        return answer
 
     # ------------------------------------------------------------------
     def _rag_channel(self, question: str, trace_id: str, start_step: int = 1) -> str:
@@ -229,6 +242,26 @@ def _summarize(result: dict) -> str:
     if not result.get("ok"):
         return f"错误：{result.get('error', '')[:80]}"
     return f"返回 {len(result.get('rows', []))} 行"
+
+
+def _chart_for_grouped(sql: str, result: dict, question: str) -> dict | None:
+    """判断 execute_sql 结果是否为「分组/趋势」形态并生成图表规格。
+
+    触发条件（与 plot_chart 工具的定位一致）：
+      - SQL 带 GROUP BY（分组统计，而非明细列表）；
+      - 结果恰好两列（类别 + 数值）且 ≥ 2 行；
+      - 第二列全部为数值。
+    单值聚合（如「XX学院有多少学生」）与多列明细（如某生成绩单）不画图。
+    """
+    if not result.get("ok") or "GROUP BY" not in (sql or "").upper():
+        return None
+    columns = result.get("columns") or []
+    rows = result.get("rows") or []
+    if len(columns) != 2 or len(rows) < 2:
+        return None
+    if not all(isinstance(r[1], (int, float)) and not isinstance(r[1], bool) for r in rows):
+        return None
+    return data_to_chart(columns, rows, title=(question or "")[:24])
 
 
 # --- 变异体 M8：列名幻觉 -----------------------------------------------------

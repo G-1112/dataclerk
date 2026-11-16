@@ -390,7 +390,7 @@ code.cmd.copied{{background:#dcfce7;border-color:#4ade80}}
 code.cmd.copied::after{{content:" ✓ 已复制";color:#16a34a;font-weight:700}}
 {_trace_css_for_report()}
 </style></head><body>
-<h1>问数官 · 智能体可靠性测试报告</h1>
+<h1>问数官 · 智能体可靠性测试报告（mock 轨道 · 框架回归基线）</h1>
 
 <div class="card flex">
   <div>
@@ -400,8 +400,11 @@ code.cmd.copied::after{{content:" ✓ 已复制";color:#16a34a;font-weight:700}}
   </div>
   {_radar_svg(values, labels)}
   <div class="muted" style="max-width:280px">
-    一句话结论：该双通道校园智能体在功能准确性、路由与安全拦截上表现稳健，
-    变异测试 {mutation.get('mutation_score','-')} 个缺陷全部被测试套件检出，
+    <b>双口径声明</b>：本报告由 mock 轨道（确定性 mock SQL 生成器 + 关键词路由）产出，
+    定位是<b>框架回归基线</b>——用例与生成器共设计，预期全绿，用于回归与变异注入的机械验证，
+    <b>1.0 的通过率不是成绩</b>。真实 LLM 主评测口径见 <code>data/report/metrics_llm.json</code>
+    与 <code>llm_track.md</code>（deepseek-chat 严格口径 93.2%）。<br>
+    一句话结论：变异测试 {mutation.get('mutation_score','-')} 个注入缺陷全部被测试套件检出，
     说明测试集在覆盖的维度上不存在明显盲区。
   </div>
 </div>
@@ -458,11 +461,14 @@ code.cmd.copied::after{{content:" ✓ 已复制";color:#16a34a;font-weight:700}}
 
 <div class="card"><h2>质量-成本</h2>
 <p>全量跑批 {len(results)} 条用例，标准答案由 SQLite 自动执行生成（零人工标注）。
-默认 mock 模式零 API 成本；接入真实 LLM 后单题成本约 0.01 元量级，全量约几十元。</p></div>
+默认 mock 模式零 API 成本；接入真实 LLM 后单题成本约 0.01 元量级，全量约几十元。</p>
+<p class="muted">口径提醒：本页所有通过率均为 mock 轨道（框架回归基线）读数；
+对外引用的成绩应以真实 LLM 轨道（<code>metrics_llm.json</code>，deepseek-chat 93.2% 严格口径）为准。</p></div>
 
 <div class="card"><h2>改进闭环</h2>
 <p class="muted">首轮跑批暴露的问题（如越权拦截、路由误判）已通过权限层 + 确定性路由修复，
-复测对比见 docs/缺陷分析报告.md。</p></div>
+复测对比见 docs/缺陷分析报告.md；首轮 mock 轨道快照保留在
+<code>data/report/metrics_round1.json</code> 作为改进闭环证据。</p></div>
 
 <script>
 (function () {{

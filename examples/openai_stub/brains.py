@@ -19,7 +19,9 @@ import re
 from examples.external_bot.bot import NaiveCampusBot
 
 _POLICY_WORDS = ("奖学金", "作弊", "处分", "逾期", "转专业", "休学", "校园卡", "借阅", "请假",
-                 "规定", "政策", "办法", "学分", "重修", "缓考", "复学", "学籍")
+                 "规定", "政策", "办法", "学分", "重修", "缓考", "复学", "学籍",
+                 # 第十七轮用例扩容（routing 46→50）同步补的政策主题词
+                 "实验室", "交换生", "讲座", "自习")
 _DESTRUCTIVE = re.compile(r"\b(DROP|DELETE|TRUNCATE|ALTER|UPDATE|INSERT)\b", re.IGNORECASE)
 _INJECTION = ("忽略", "导出", "全部学生", "所有学生", "system prompt", "忽略之前", "无视")
 _STAT_WORDS = ("多少", "平均", "最高", "最低", "分布", "排名", "几门", "绩点")

@@ -1,0 +1,232 @@
+{
+  "metrics": {
+    "functional": {
+      "执行准确率": 1.0,
+      "语义等价准确率": 1.0,
+      "严格判错但语义等价": 0,
+      "SQL可执行率": 1.0,
+      "用例数": 59
+    },
+    "tool_calls": {
+      "工具选择准确率": 1.0,
+      "平均步数": 2.7,
+      "用例数": 105
+    },
+    "rag": {
+      "召回@3": 1.0,
+      "忠实度": 1.0,
+      "用例数": 38
+    },
+    "multiturn": {
+      "指代消解准确率": 1.0,
+      "约束保持率": 1.0,
+      "约束误继承率": 0.0,
+      "用例数": 29
+    },
+    "security": {
+      "越权拦截率": 1.0,
+      "注入防御成功率": 1.0,
+      "危险语句拦截率": 1.0,
+      "用例数": 86
+    },
+    "boundary": {
+      "优雅降级率": 1.0,
+      "用例数": 31
+    },
+    "routing": {
+      "路由准确率": 1.0,
+      "用例数": 46
+    },
+    "stability": {
+      "结果一致率": 1.0,
+      "题目数": 10,
+      "用例数": 10
+    },
+    "performance": {
+      "平均时延ms": 62.5,
+      "P95时延ms": 104.6,
+      "3秒内完成率": 1.0,
+      "用例数": 10
+    },
+    "rag_eval": {
+      "ragas": {
+        "status": "skipped",
+        "reason": "ragas 未安装（pip install -e '.[rag-eval]'）"
+      },
+      "deepeval": {
+        "status": "skipped",
+        "reason": "deepeval 未安装（pip install -e '.[rag-eval]'）"
+      },
+      "llm_judge": {
+        "status": "skipped",
+        "reason": "未配置 LLM_API_KEY（LLM-as-judge 需要真实模型）"
+      },
+      "available": {
+        "ragas": false,
+        "deepeval": false,
+        "llm": false
+      }
+    }
+  },
+  "mutation": {
+    "baseline": {
+      "functional": {
+        "执行准确率": 1.0,
+        "语义等价准确率": 1.0,
+        "严格判错但语义等价": 0,
+        "SQL可执行率": 1.0,
+        "用例数": 59
+      },
+      "tool_calls": {
+        "工具选择准确率": 1.0,
+        "平均步数": 2.7,
+        "用例数": 105
+      },
+      "rag": {
+        "召回@3": 1.0,
+        "忠实度": 1.0,
+        "用例数": 38
+      },
+      "multiturn": {
+        "指代消解准确率": 1.0,
+        "约束保持率": 1.0,
+        "约束误继承率": 0.0,
+        "用例数": 29
+      },
+      "security": {
+        "越权拦截率": 1.0,
+        "注入防御成功率": 1.0,
+        "危险语句拦截率": 1.0,
+        "用例数": 86
+      },
+      "boundary": {
+        "优雅降级率": 1.0,
+        "用例数": 31
+      },
+      "routing": {
+        "路由准确率": 1.0,
+        "用例数": 46
+      },
+      "stability": {
+        "结果一致率": 1.0,
+        "题目数": 10,
+        "用例数": 10
+      },
+      "performance": {
+        "平均时延ms": 60.8,
+        "P95时延ms": 111.8,
+        "3秒内完成率": 1.0,
+        "用例数": 10
+      }
+    },
+    "mutants": [
+      {
+        "id": "M1",
+        "name": "移除 get_schema 工具",
+        "target": "工具调用",
+        "dimension": "tool_calls",
+        "baseline_score": 1.0,
+        "mutant_score": 0.438,
+        "drop": 0.562,
+        "killed": true
+      },
+      {
+        "id": "M2",
+        "name": "记忆截断为最近 2 轮",
+        "target": "多轮对话",
+        "dimension": "multiturn",
+        "baseline_score": 1.0,
+        "mutant_score": 0.688,
+        "drop": 0.312,
+        "killed": true
+      },
+      {
+        "id": "M3",
+        "name": "移除权限过滤层",
+        "target": "对抗性与安全",
+        "dimension": "security",
+        "baseline_score": 1.0,
+        "mutant_score": 0.0,
+        "drop": 1.0,
+        "killed": true
+      },
+      {
+        "id": "M4",
+        "name": "政策库投毒（混入错误条款）",
+        "target": "RAG 检索质量",
+        "dimension": "rag",
+        "baseline_score": 1.0,
+        "mutant_score": 0.237,
+        "drop": 0.763,
+        "killed": true
+      },
+      {
+        "id": "M5",
+        "name": "温度提到 1.2",
+        "target": "规划稳定性",
+        "dimension": "stability",
+        "baseline_score": 1.0,
+        "mutant_score": 0.7,
+        "drop": 0.3,
+        "killed": true
+      },
+      {
+        "id": "M6",
+        "name": "禁用 clarify 工具",
+        "target": "边界与异常",
+        "dimension": "boundary",
+        "baseline_score": 1.0,
+        "mutant_score": 0.548,
+        "drop": 0.452,
+        "killed": true
+      },
+      {
+        "id": "M7",
+        "name": "破坏路由判断（总是走 SQL）",
+        "target": "路由正确性",
+        "dimension": "routing",
+        "baseline_score": 1.0,
+        "mutant_score": 0.543,
+        "drop": 0.457,
+        "killed": true
+      },
+      {
+        "id": "M8",
+        "name": "SQL 列名幻觉（列名记错）",
+        "target": "生成期静默失效",
+        "dimension": "functional",
+        "baseline_score": 1.0,
+        "mutant_score": 0.068,
+        "drop": 0.932,
+        "killed": true
+      },
+      {
+        "id": "M9",
+        "name": "WHERE 被静默丢弃（过滤失效）",
+        "target": "执行期静默失效",
+        "dimension": "functional",
+        "baseline_score": 1.0,
+        "mutant_score": 0.254,
+        "drop": 0.746,
+        "killed": true
+      },
+      {
+        "id": "M10",
+        "name": "记忆只写不读（约束从不生效）",
+        "target": "上下文失效",
+        "dimension": "multiturn",
+        "baseline_score": 1.0,
+        "mutant_score": 0.0,
+        "drop": 1.0,
+        "killed": true
+      }
+    ],
+    "mutation_score": "10/10"
+  },
+  "db": {
+    "path": "E:\\葛铭坤\\26传智\\团队赛\\智能测试\\dataclerk\\data\\campus.db",
+    "sha256": "c57780590e80e582",
+    "rows": 60000
+  },
+  "cases_total": 309
+}

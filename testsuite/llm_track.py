@@ -3,9 +3,10 @@
 设计原则
 --------
 - 本文件**只**显式加载 `.env.llm` 里的 LLM_API_KEY；官方 `run_suite` / `pytest`
-  不读取本文件，因此默认保持 mock 模式、不产生 API 费用、不污染 307 套件基线。
-- 与官方套件的关系：官方 307 用例在 mock 模式给出「确定性可复现」的满分基线；
-  本轨道则在**真实大模型**下复跑一组代表性用例，回答评审最关心的那句话——
+  不读取本文件，因此默认保持 mock 模式、不产生 API 费用、不污染 mock 套件基线。
+- 与官方套件的关系：官方 545 条断言在 mock 模式给出「确定性可复现」的满分基线
+  （定位是**框架回归基线**，不是成绩）；本轨道则在**真实大模型**下复跑一组
+  代表性用例（锁定原 59 条功能基线），回答评审最关心的那句话——
   「你号称测一个 AI 智能体，那真实大模型那条链路，你到底测了没有？」
 
 测量口径（与官方套件一致）
@@ -66,7 +67,7 @@ if not os.getenv("LLM_API_KEY"):
     sys.exit(
         "✗ 未检测到 LLM_API_KEY（应在 .env.llm 中配置）。\n"
         "  真实 LLM 轨道为可选能力，未配置时请勿运行本脚本；"
-        "官方 307 套件请在 mock 模式下运行。"
+        "官方 mock 套件请在 mock 模式下运行。"
     )
 
 # DB 路径：默认 data/campus.db，可被 --db 覆盖；必须在 import agent.db 前设置。
@@ -99,16 +100,19 @@ LEGACY_SQL_SYSTEM = """你是校园数据智能体的 SQL 生成器。根据表�
 
 
 def _load_functional() -> dict[str, dict]:
-    """加载与官方套件完全一致的 59 条功能用例（含模板扩展）。"""
-    from testsuite.cases import functional_cases
+    """加载与官方套件一致的功能用例基线子集（59 条 = 手写 10 + 第十三轮模板扩展 49）。
 
-    return {c["id"]: c for c in functional_cases()}
+    第十七轮 functional 扩到 150 后，LLM 轨道仍锁定这 59 条基线
+    （93.2% 口径的分母不变）；扩容用例只进 mock 套件。
+    """
+    from testsuite.cases import LLM_TRACK_FUNCTIONAL_IDS, functional_cases
+
+    pinned = set(LLM_TRACK_FUNCTIONAL_IDS)
+    return {c["id"]: c for c in functional_cases() if c["id"] in pinned}
 
 
 def _functional_ids() -> list[str]:
-    from testsuite.cases import functional_cases
-
-    return [c["id"] for c in functional_cases()]
+    return list(_load_functional())
 
 
 def _load_rag() -> dict[str, dict]:

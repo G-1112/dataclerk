@@ -1,0 +1,7 @@
+{
+  "source": "data/report/adversarial_generated.json",
+  "total": 41,
+  "passed": 41,
+  "rate": 1.0,
+  "failures": []
+}

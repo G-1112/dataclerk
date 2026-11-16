@@ -16,7 +16,18 @@ env/
 # 生成产物
 data/*.db
 data/traces/
-data/report/
+# data/report/ 默认忽略，但保留关键执行记录入库（评委可审计 mock 轨道的
+# 「框架回归基线」结果与真实 LLM 轨道的主评测口径）：
+data/report/*
+!data/report/metrics.json
+!data/report/metrics_round1.json
+!data/report/metrics_llm.json
+!data/report/metrics_llm_legacy.json
+!data/report/report.html
+!data/report/llm_track.md
+!data/report/llm_track_legacy.md
+!data/report/llm_rounds.md
+!data/report/extra_security.json
 data/uploads/
 
 # 系统

@@ -130,12 +130,12 @@ class MockSqlGenerator:
         # 最高/最低成绩
         if re.search(r"最高|最低", q) and re.search(r"成绩|分", q):
             return self._maxmin_score(college, semester, "MAX" if "最高" in q else "MIN")
+        # 选课人数（须先于「多少+人」的人数统计分支：否则「选课人数」被截胡成学生计数）
+        if re.search(r"选课|选修|选了多少", q) and re.search(r"人|人数", q):
+            return self._count_enrollments(college, semester)
         # 人数统计
         if re.search(r"多少|人数|统计|有几个|数量", q) and re.search(r"学生|同学|人", q):
             return self._count_students(college, _extract_grade(q))
-        # 选课人数
-        if re.search(r"选课|选修|选了多少", q) and re.search(r"人|人数", q):
-            return self._count_enrollments(college, semester)
         # 课程列表
         if re.search(r"课程|课", q) and re.search(r"有哪些|什么|哪些|列表", q):
             return self._list_courses(college)

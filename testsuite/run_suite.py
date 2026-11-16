@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from agent.config import MUTATION_KILL_DROP
@@ -75,49 +77,77 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+def _workers() -> int:
+    """功能维度并发 worker 数（env DATACLERK_WORKERS，默认 8，非法值回退默认）。"""
+    raw = os.getenv("DATACLERK_WORKERS", "").strip()
+    try:
+        return max(1, int(raw)) if raw else 8
+    except ValueError:
+        return 8
+
+
+def _run_functional_case(c: dict, client: AgentClient) -> dict:
+    """跑单条功能用例（可在线程池中执行：连接按线程局部池复用，trace 按 trace_id 独立落盘）。"""
+    # 第十二轮修复：单条用例异常（如 DB 缺表）不再中断整个跑批，
+    # 记为失败行继续（与 run_boundary 同款兜底）。
+    try:
+        r = client.run(c["question"], role=c.get("role", "admin"), session_id=c["id"])
+        expected, expected_cols = _expected_rows_full(c["expected_sql"])
+        match = result_hash(r["rows"]) == result_hash(expected)
+        # 语义等价（第十四轮）：严格判定之外再算一次"多种正确写法"口径，
+        # 只作为附加指标，不替换 passed。
+        equiv = equivalence.compare(
+            expected, r["rows"],
+            expected_cols=expected_cols, actual_cols=r.get("columns") or [],
+            spec=c.get("equiv"),
+        )
+        executable = r["sql"] is not None and "查询失败" not in r["answer"]
+        tools = [s["tool"] for s in r["trace"] if s.get("tool")]
+        tool_correct = "get_schema" in tools and "execute_sql" in tools
+        # 第十七轮：工具序列断言（plot_chart 正反例：该画图的 trace 里必须有，不该画的不得有）
+        for t in c.get("expect_tools") or []:
+            tool_correct = tool_correct and t in tools
+        for t in c.get("expect_no_tools") or []:
+            tool_correct = tool_correct and t not in tools
+        return {
+            "id": c["id"], "dimension": "functional", "passed": match,
+            "result_match": match,
+            "equivalent_semantic": equiv["equivalent"],
+            "equiv_level": equiv["level"],
+            "equiv_reason": equiv["reason"],
+            "sql_executable": executable, "tool_correct": tool_correct,
+            # 第九轮修复：结果必须携带 steps，否则 metrics.tool_calls 里
+            # len(r.get("trace", [])) 恒为 0 → 「平均步数」永远是 0.0，指标形同虚设。
+            "steps": len(r["trace"]),
+            # 第十二轮修复：携带 trace_id，报告「思考-行动链路审计」区块此前恒为空
+            "trace_id": r.get("trace_id", ""),
+            "question": c["question"], "answer": r["answer"][:80], "sql": r["sql"],
+        }
+    except Exception as e:  # noqa: BLE001
+        return {
+            "id": c["id"], "dimension": "functional", "passed": False,
+            "result_match": False, "equivalent_semantic": False,
+            "equiv_level": "none", "equiv_reason": f"用例执行异常：{type(e).__name__}",
+            "sql_executable": False, "tool_correct": False,
+            "steps": 0, "trace_id": "",
+            "question": c["question"], "answer": f"用例执行异常：{type(e).__name__}: {e}"[:80], "sql": None,
+        }
+
+
 def run_functional(cases: list[dict], client: AgentClient) -> list[dict]:
-    results = []
-    for c in cases:
-        # 第十二轮修复：单条用例异常（如 DB 缺表）不再中断整个跑批，
-        # 记为失败行继续（与 run_boundary 同款兜底）。
-        try:
-            r = client.run(c["question"], role=c.get("role", "admin"), session_id=c["id"])
-            expected, expected_cols = _expected_rows_full(c["expected_sql"])
-            match = result_hash(r["rows"]) == result_hash(expected)
-            # 语义等价（第十四轮）：严格判定之外再算一次"多种正确写法"口径，
-            # 只作为附加指标，不替换 passed。
-            equiv = equivalence.compare(
-                expected, r["rows"],
-                expected_cols=expected_cols, actual_cols=r.get("columns") or [],
-                spec=c.get("equiv"),
-            )
-            executable = r["sql"] is not None and "查询失败" not in r["answer"]
-            tools = [s["tool"] for s in r["trace"] if s.get("tool")]
-            tool_correct = "get_schema" in tools and "execute_sql" in tools
-            results.append({
-                "id": c["id"], "dimension": "functional", "passed": match,
-                "result_match": match,
-                "equivalent_semantic": equiv["equivalent"],
-                "equiv_level": equiv["level"],
-                "equiv_reason": equiv["reason"],
-                "sql_executable": executable, "tool_correct": tool_correct,
-                # 第九轮修复：结果必须携带 steps，否则 metrics.tool_calls 里
-                # len(r.get("trace", [])) 恒为 0 → 「平均步数」永远是 0.0，指标形同虚设。
-                "steps": len(r["trace"]),
-                # 第十二轮修复：携带 trace_id，报告「思考-行动链路审计」区块此前恒为空
-                "trace_id": r.get("trace_id", ""),
-                "question": c["question"], "answer": r["answer"][:80], "sql": r["sql"],
-            })
-        except Exception as e:  # noqa: BLE001
-            results.append({
-                "id": c["id"], "dimension": "functional", "passed": False,
-                "result_match": False, "equivalent_semantic": False,
-                "equiv_level": "none", "equiv_reason": f"用例执行异常：{type(e).__name__}",
-                "sql_executable": False, "tool_correct": False,
-                "steps": 0, "trace_id": "",
-                "question": c["question"], "answer": f"用例执行异常：{type(e).__name__}: {e}"[:80], "sql": None,
-            })
-    return results
+    """功能准确性用例跑批（第十七轮并行化）。
+
+    ThreadPoolExecutor 逐 case 提交、按提交序保序收集结果（pool.map 保序）；
+    DATACLERK_WORKERS 控制并发度，默认 8。线程安全依据：
+      - SQLite 连接为线程局部池（agent/db.py），各线程独立复用；
+      - trace 按 trace_id（uuid）独立写文件，无共享句柄；
+      - 会话槽位按 case id 隔离，mock 生成器为纯函数。
+    """
+    workers = _workers()
+    if workers == 1:
+        return [_run_functional_case(c, client) for c in cases]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(lambda c: _run_functional_case(c, client), cases))
 
 
 _STUDENT_ID_RE_ROW = re.compile(r"^S\d{3,}$", re.I)
