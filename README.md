@@ -42,7 +42,7 @@ dataclerk/
 │   ├── verify_cases.py     # 用例入库前预检门（全量跑真实管线）
 │   └── report/             # HTML 报告生成
 ├── examples/external_bot/  # 演示用"第三方智能体"（独立实现，自带 5 类缺陷）
-├── tests/                  # 单元测试（530 项：XSS 转义回归 + 安全回归 + 适配器/变异体/判官单测 + 扩容守卫）
+├── tests/                  # 单元测试（532 项：XSS 转义回归 + 安全回归 + 适配器/变异体/判官单测 + 扩容守卫）
 └── docs/                   # 测试方案 / 缺陷分析报告 / 适配指南
 ```
 
@@ -96,11 +96,11 @@ python data/gen_policies.py                               # 合成 80 篇政策�
 ### 第 3 步：跑单元测试
 
 ```bash
-pytest -q          # 预期 530 passed（XSS 转义 + 安全回归 + 适配器/变异体/判官/等价/重放/环境隔离 单测 + 扩容守卫）
+pytest -q          # 预期 532 passed（XSS 转义 + 安全回归 + 适配器/变异体/判官/等价/重放/环境隔离 单测 + 扩容守卫）
 ```
 
 > **若你和我一样在「带 safe-delete 钩子的沙箱」里跑**：全量 pytest 退出码可能非 0 而 junit 报告是
-> `530 passed / 0 failed`——那是钩子在拦 pytest 清理系统临时目录（一次 90+ 文件触发批量确认），
+> `532 passed / 0 failed`——那是钩子在拦 pytest 清理系统临时目录（一次 90+ 文件触发批量确认），
 > 不是测试失败。两个可信做法：① 信 `--junitxml` 的读数；② 把临时目录放仓库内再跑：
 > `pytest -q --basetemp=_tmp_pt`（实测退出码 0）。
 
@@ -519,10 +519,16 @@ python -m testsuite.llm_track --rounds 3
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
+| GET | `/` | 服务入口：返回服务名与**端点清单**（浏览器直接打开即可看到，不再是 404） |
+| GET | `/ui` | **可视化控制台**：网页里直接提问，带 channel 标签与「查看执行过程」（单文件、零构建） |
 | POST | `/chat` | `{question, role, session_id, user_id}` → `{answer, sources, trace_id}` |
 | GET | `/trace/{trace_id}` | 返回完整步骤轨迹 |
 | POST | `/reset` | 重置会话记忆 |
 | GET | `/health` | 健康检查 |
+| GET | `/docs` | OpenAPI 交互文档（Swagger） |
+
+> 起来之后先开 <http://127.0.0.1:8000/ui>：三个示例问题各点一次，就能看到
+> `channel=sql`（给出人数）、`channel=rag`（附政策出处）与 `channel=deny`（越权拒绝）三种结果。
 
 ---
 

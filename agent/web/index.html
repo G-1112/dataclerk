@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>问数官 DataClerk · 控制台</title>
+<style>
+  :root{
+    --bg:#0b0f14; --panel:#121a23; --panel2:#16202b; --line:#243040;
+    --ink:#e9f0f8; --sub:#8ba0b8; --accent:#4da3ff;
+    --sql:#3ddc97; --rag:#ffb84d; --deny:#ff6b6b; --muted:#5f7286;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font-family:"Microsoft YaHei","PingFang SC",system-ui,sans-serif;line-height:1.6}
+  .wrap{max-width:980px;margin:0 auto;padding:20px 18px 120px}
+  header{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+  h1{font-size:18px;margin:0}
+  .sub{font-size:12px;color:var(--sub)}
+  .badge{font-size:11px;padding:2px 9px;border-radius:99px;border:1px solid var(--line);color:var(--sub)}
+  .badge.ok{color:#3ddc97;border-color:#1f4a37;background:#0e2419}
+  .badge.warn{color:#ffb84d;border-color:#4a3a1a;background:#241c0e}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:12px 0}
+  select,input{background:var(--panel2);border:1px solid var(--line);color:var(--ink);
+               border-radius:8px;padding:7px 10px;font-size:13px;outline:none}
+  input:focus,select:focus{border-color:#3d6ba3}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+  .chip{background:var(--panel2);border:1px solid var(--line);color:#b9cbdf;border-radius:99px;
+        padding:5px 12px;font-size:12px;cursor:pointer}
+  .chip:hover{border-color:#3d6ba3;color:#fff}
+  .msg{margin:14px 0}
+  .q{display:flex;justify-content:flex-end}
+  .q .bubble{background:#17324d;border:1px solid #24486b;border-radius:12px 12px 4px 12px;
+             padding:10px 14px;max-width:80%;font-size:14px}
+  .a .bubble{background:var(--panel);border:1px solid var(--line);border-radius:12px 12px 12px 4px;
+             padding:12px 16px;font-size:14px}
+  .meta{display:flex;gap:8px;align-items:center;margin-bottom:8px;font-size:11px;color:var(--sub)}
+  .tag{font-weight:700;letter-spacing:.5px}
+  .t-sql{color:var(--sql)} .t-rag{color:var(--rag)} .t-deny{color:var(--deny)} .t-other{color:var(--accent)}
+  .answer{white-space:pre-wrap}
+  details{margin-top:10px;border-top:1px dashed var(--line);padding-top:8px}
+  summary{cursor:pointer;font-size:12px;color:var(--sub)}
+  .step{font-size:12px;color:#a8bccf;margin:6px 0;padding-left:10px;border-left:2px solid #23303f}
+  .step b{color:#dce9f7;font-weight:600}
+  code{font-family:Consolas,monospace;font-size:12px;background:#0d1620;border:1px solid #1e2b3a;
+       border-radius:5px;padding:1px 6px;color:#8fd3ff}
+  footer{position:fixed;left:0;right:0;bottom:0;background:rgba(11,15,20,.95);
+         border-top:1px solid var(--line);padding:10px 18px}
+  .ask{max-width:980px;margin:0 auto;display:flex;gap:8px}
+  .ask input{flex:1;padding:11px 14px;font-size:14px}
+  button{background:var(--accent);border:none;color:#04121f;font-weight:700;
+         border-radius:9px;padding:0 20px;font-size:14px;cursor:pointer}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .hint{font-size:11px;color:var(--muted);text-align:center;margin-top:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>问数官 DataClerk</h1>
+    <span class="badge" id="health">检查服务中…</span>
+    <span class="sub">双通道校园智能体 · Text-to-SQL + 政策 RAG ｜ 越权请求在 SQL 重写层被拒绝</span>
+  </header>
+
+  <div class="bar">
+    <label class="sub">身份</label>
+    <select id="role">
+      <option value="student">student（学生）</option>
+      <option value="teacher">teacher（教师）</option>
+      <option value="admin">admin（仅演示环境可用）</option>
+    </select>
+    <label class="sub">学号/工号</label>
+    <input id="uid" value="S00001" size="10">
+    <label class="sub">会话</label>
+    <input id="sid" value="demo" size="8">
+  </div>
+
+  <div class="chips">
+    <span class="chip" data-q="软件学院有多少学生？">软件学院有多少学生？</span>
+    <span class="chip" data-q="国家奖学金需要什么条件？">国家奖学金需要什么条件？</span>
+    <span class="chip" data-q="查一下 S00002 的校园卡消费记录">查一下 S00002 的校园卡消费记录</span>
+    <span class="chip" data-q="我上学期各科成绩怎么样？">我上学期各科成绩怎么样？</span>
+  </div>
+
+  <div id="log"></div>
+</div>
+
+<footer>
+  <div class="ask">
+    <input id="q" placeholder="问点什么，例如：软件学院有多少学生？" autocomplete="off">
+    <button id="send">发送</button>
+  </div>
+  <div class="hint">Enter 发送 ｜ 返回里带 channel，可展开看每一步工具调用与生成的 SQL</div>
+</footer>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const API = "";
+let busy = false;
+
+async function health() {
+  try {
+    const r = await fetch(API + "/health");
+    const d = await r.json();
+    $("health").textContent = `服务正常 · LLM ${d.llm_enabled ? "真实" : "mock"} · 鉴权 ${d.auth_enabled ? "开启" : "关闭"}`;
+    $("health").className = "badge ok";
+  } catch (e) {
+    $("health").textContent = "服务不可达";
+    $("health").className = "badge warn";
+  }
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+function tagClass(ch) {
+  if (ch === "sql") return "t-sql";
+  if (ch === "rag") return "t-rag";
+  if (ch === "deny") return "t-deny";
+  return "t-other";
+}
+
+function addQuestion(text) {
+  const div = document.createElement("div");
+  div.className = "msg q";
+  div.innerHTML = `<div class="bubble">${esc(text)}</div>`;
+  $("log").appendChild(div);
+  div.scrollIntoView({ behavior: "smooth", block: "end" });
+}
+
+function addAnswer(d, ms, steps) {
+  const div = document.createElement("div");
+  div.className = "msg a";
+  const ch = (d.channel || "?").toUpperCase();
+  const rows = (steps || []).map((s) => {
+    const sql = s.args && s.args.sql ? `<br><code>${esc(s.args.sql)}</code>` : "";
+    return `<div class="step"><b>${esc(s.tool || "")}</b> · ${esc(s.thought || "")}${sql}</div>`;
+  }).join("");
+  div.innerHTML = `
+    <div class="bubble">
+      <div class="meta">
+        <span class="tag ${tagClass(d.channel)}">${ch}</span>
+        <span>${ms} ms</span>
+        <span>trace ${esc((d.trace_id || "").slice(0, 10))}</span>
+      </div>
+      <div class="answer">${esc(d.answer || "")}</div>
+      ${rows ? `<details><summary>查看执行过程（${(steps || []).length} 步）</summary>${rows}</details>` : ""}
+    </div>`;
+  $("log").appendChild(div);
+  div.scrollIntoView({ behavior: "smooth", block: "end" });
+}
+
+async function ask(text) {
+  if (busy || !text.trim()) return;
+  busy = true;
+  $("send").disabled = true;
+  addQuestion(text);
+  const t0 = performance.now();
+  try {
+    const r = await fetch(API + "/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        question: text, role: $("role").value,
+        user_id: $("uid").value.trim(), session_id: $("sid").value.trim() || "demo",
+      }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
+    let steps = [];
+    try {
+      const tr = await fetch(API + "/trace/" + d.trace_id);
+      steps = (await tr.json()).steps || [];
+    } catch (e) { /* trace 可选 */ }
+    addAnswer(d, Math.round(performance.now() - t0), steps);
+  } catch (e) {
+    addAnswer({ channel: "error", answer: "请求失败：" + e.message, trace_id: "" }, Math.round(performance.now() - t0), []);
+  } finally {
+    busy = false;
+    $("send").disabled = false;
+    $("q").focus();
+  }
+}
+
+$("send").onclick = () => { const t = $("q").value; $("q").value = ""; ask(t); };
+$("q").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { const t = $("q").value; $("q").value = ""; ask(t); }
+});
+document.querySelectorAll(".chip").forEach((c) => {
+  c.onclick = () => ask(c.dataset.q);
+});
+
+health();
+setInterval(health, 30000);
+</script>
+</body>
+</html>
